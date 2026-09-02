@@ -10,7 +10,16 @@ export const logger = pino({
     '*.password',
     '*.password_hash',
     '*.token',
-    '*.SUPABASE_SERVICE_ROLE_KEY'
+    '*.accessToken',
+    '*.access_token',
+    '*.refreshToken',
+    '*.refresh_token',
+    '*.identityToken',
+    '*.authorizationCode',
+    '*.SUPABASE_SECRET_KEY',
+    '*.SUPABASE_SERVICE_ROLE_KEY',
+    '*.KAKAO_ADMIN_KEY',
+    '*.KAKAO_REST_API_KEY'
   ],
   transport:
     env.NODE_ENV === 'development'

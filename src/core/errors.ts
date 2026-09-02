@@ -24,8 +24,17 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
     return;
   }
 
+  if (error instanceof SyntaxError && 'body' in error) {
+    res.status(400).json({
+      code: 'INVALID_JSON',
+      message: 'Request body contains invalid JSON',
+      requestId
+    });
+    return;
+  }
+
   (req as { log?: { error: (payload: unknown, message: string) => void } }).log?.error(
-    { error },
+    { err: error },
     'Unhandled request error'
   );
   res.status(500).json({ code: 'SERVER_ERROR', message: 'Internal server error', requestId });

@@ -8,7 +8,7 @@ export const requestLogger = pinoHttp<Request, Response>({
   genReqId: (req, res) => {
     const existingId = req.headers['x-request-id'];
     const requestId = Array.isArray(existingId) ? existingId[0] : existingId;
-    const id = requestId ?? randomUUID();
+    const id = requestId && /^[A-Za-z0-9._:-]{1,100}$/.test(requestId) ? requestId : randomUUID();
     res.setHeader('x-request-id', id);
     return id;
   },

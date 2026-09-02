@@ -7,6 +7,8 @@ if (!backendKey) throw new Error('Supabase backend key is not configured');
 
 export const supabaseAdmin = createClient(env.SUPABASE_URL, backendKey, {
   auth: {
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
     persistSession: false
   }
 });

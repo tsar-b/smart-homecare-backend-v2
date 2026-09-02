@@ -28,3 +28,31 @@ export const AdminUpdateSchema = z.record(z.unknown()).refine(
     message: 'Request contains protected fields'
   }
 );
+
+const AdminDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+export const AdminBookingFilterSchema = z.object({
+  start: AdminDateSchema.optional(),
+  end: AdminDateSchema.optional(),
+  startDate: AdminDateSchema.optional(),
+  endDate: AdminDateSchema.optional(),
+  status: z.enum(['대기', '확정', '완료', '취소', 'pending', 'confirmed', 'approved', 'completed', 'cancelled']).optional()
+}).refine((value) => Boolean(value.start ?? value.startDate) && Boolean(value.end ?? value.endDate), {
+  message: 'start and end dates are required'
+});
+
+export const AdminBookingUpdateSchema = z.object({
+  status: z.enum(['대기', '확정', '완료', '취소', 'pending', 'confirmed', 'approved', 'completed', 'cancelled']).optional(),
+  totalPrice: z.number().int().min(-1).optional(),
+  total_price: z.number().int().min(-1).optional(),
+  options: z.array(z.unknown()).max(30).optional()
+}).refine((value) => Object.values(value).some((entry) => entry !== undefined), {
+  message: 'At least one booking field is required'
+});
+
+export const AdminRoleUpdateSchema = z.object({
+  isAdmin: z.boolean().optional(),
+  is_admin: z.boolean().optional()
+}).refine((value) => value.isAdmin !== undefined || value.is_admin !== undefined, {
+  message: 'isAdmin is required'
+});

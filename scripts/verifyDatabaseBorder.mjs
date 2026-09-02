@@ -1,11 +1,6 @@
-import fs from 'node:fs';
+import { readArguments, resolveManagementCredentials, runDatabaseQuery } from './lib/supabaseManagement.mjs';
 
-const projectRef = process.env.SUPABASE_PROJECT_REF ?? 'ixnwmvznoptjbfnrgfbn';
-const secretsPath = process.env.SHC_SECRETS_FILE ?? '/Users/allan/Documents/blyat.md';
-const secrets = fs.readFileSync(secretsPath, 'utf8');
-const accessToken = secrets.match(/Access Token\s*(?:[:=]|\n)\s*`?([^\s`]+)/i)?.[1];
-
-if (!accessToken) throw new Error('Supabase Access Token was not found');
+const args = readArguments();
 
 const query = `
 do $$
@@ -40,9 +35,44 @@ begin
 
   delete from public.idempotency_keys
   where scope = 'verification' and idempotency_key = 'verification-key-0001';
+
+  if exists (
+    select 1 from public.user_identities
+    group by provider, provider_subject having count(*) > 1
+  ) then
+    raise exception 'Duplicate provider identities exist';
+  end if;
+
+  if exists (
+    select 1 from public.bookings
+    where status in ('대기', '확정', 'pending', 'confirmed', 'approved')
+    group by reservation_date, reservation_time having count(*) > 1
+  ) then
+    raise exception 'Duplicate active booking slots exist';
+  end if;
+
+  if exists (
+    select 1 from public.bookings bookings
+    left join public.users users on users.id = bookings.user_id
+    where users.id is null
+  ) then
+    raise exception 'Orphan booking profiles exist';
+  end if;
+
+  if to_regprocedure(
+    'public.upsert_authenticated_identity(uuid,text,text,text,text,text,text,text,boolean,jsonb)'
+  ) is null then
+    raise exception 'Supabase Auth identity RPC is missing';
+  end if;
 end $$;
 
 select json_build_object(
+  'profiles', (select count(*) from public.users),
+  'profile_names', (select json_agg(name order by name) from public.users),
+  'auth_users', (select count(*) from auth.users),
+  'auth_linked_profiles', (select count(*) from public.users where auth_user_id is not null),
+  'bookings', (select count(*) from public.bookings),
+  'legacy_requests', (select count(*) from public.requests),
   'user_identities', (select count(*) from public.user_identities),
   'identity_aliases', (select count(*) from public.identity_aliases),
   'idempotency_keys', (select count(*) from public.idempotency_keys),
@@ -62,25 +92,49 @@ select json_build_object(
         'users_guest_phone_unique_idx',
         'requests_user_client_request_unique_idx',
         'bookings_user_client_request_unique_idx',
-        'bookings_unique_active_slot_idx'
+        'bookings_unique_active_slot_idx',
+        'users_auth_user_id_unique_idx',
+        'bookings_user_history_idx',
+        'bookings_status_date_idx'
       )
   ),
   'idempotency_rpc',
-    to_regprocedure('public.claim_idempotency_key(text,text,text,integer)') is not null
+    to_regprocedure('public.claim_idempotency_key(text,text,text,integer)') is not null,
+  'auth_identity_rpc',
+    to_regprocedure(
+      'public.upsert_authenticated_identity(uuid,text,text,text,text,text,text,text,boolean,jsonb)'
+    ) is not null,
+  'integrity_constraints', (
+    select json_agg(conname order by conname)
+    from pg_constraint
+    where conname in (
+      'users_auth_user_id_fkey',
+      'bookings_user_id_fkey',
+      'bookings_service_type_id_fkey',
+      'bookings_subtype_id_fkey',
+      'bookings_pricing_tier_id_fkey',
+      'bookings_status_check',
+      'bookings_reservation_date_check',
+      'bookings_reservation_time_check',
+      'bookings_total_price_check',
+      'bookings_price_source_check',
+      'bookings_timezone_check'
+    )
+  ),
+  'rls_enabled_tables', (
+    select json_agg(relname order by relname)
+    from pg_class
+    join pg_namespace on pg_namespace.oid = pg_class.relnamespace
+    where pg_namespace.nspname = 'public'
+      and pg_class.relname in (
+        'users', 'bookings', 'user_identities', 'identity_aliases', 'idempotency_keys',
+        'catalog_categories', 'service_types', 'subtypes', 'pricing_tiers',
+        'request_options', 'assets', 'timeslots', 'audit_logs'
+      )
+      and pg_class.relrowsecurity
+  )
 ) as verification;
 `;
 
-const response = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/database/query`, {
-  method: 'POST',
-  headers: {
-    Authorization: `Bearer ${accessToken}`,
-    'Content-Type': 'application/json'
-  },
-  body: JSON.stringify({ query })
-});
-
-const body = await response.text();
-if (!response.ok) throw new Error(`Verification failed (${response.status}): ${body}`);
-
-const parsed = JSON.parse(body);
+const parsed = await runDatabaseQuery(query, resolveManagementCredentials(args));
 console.log(JSON.stringify(parsed[0]?.verification ?? parsed, null, 2));

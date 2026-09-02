@@ -1,11 +1,22 @@
-import dotenv from 'dotenv';
 import { createHttpServer } from './core/http.js';
-
-dotenv.config();
+import { logger } from './core/logger.js';
+import { env } from './core/env.js';
 
 const app = createHttpServer();
-const port = Number(process.env.PORT ?? 5000);
+const port = env.PORT;
 
-app.listen(port, '0.0.0.0', () => {
-  console.log(`Backend running on :${port}`);
+const server = app.listen(port, '0.0.0.0', () => {
+  logger.info({ port }, 'SHC backend started');
 });
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, () => {
+    logger.info({ signal }, 'Shutting down SHC backend');
+    server.close((error) => {
+      if (error) {
+        logger.error({ err: error }, 'HTTP server shutdown failed');
+        process.exitCode = 1;
+      }
+    });
+  });
+}
