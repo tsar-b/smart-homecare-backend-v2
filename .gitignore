@@ -1,4 +1,9 @@
-node_modules\n.env
-node_modules
+node_modules/
+.npm-cache/
+dist/
 .env
-
+.env.*
+!.env.example
+*.log
+.DS_Store
+blyat.md
