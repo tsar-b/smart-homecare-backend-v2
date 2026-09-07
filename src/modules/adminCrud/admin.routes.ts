@@ -25,6 +25,15 @@ import {
   AdminTableParamsSchema,
   AdminUpdateSchema
 } from './admin.schema.js';
+import {
+  deleteAdminBookingAttachment,
+  getAdminAttachmentDownloadUrl,
+  listAdminBookingAttachments
+} from '../bookingAttachments/bookingAttachment.controller.js';
+import {
+  BookingAttachmentBookingParamsSchema,
+  BookingAttachmentParamsSchema
+} from '../bookingAttachments/bookingAttachment.schema.js';
 
 export const adminRouter = Router();
 
@@ -32,6 +41,21 @@ adminRouter.use(requireAuth, requireAdmin);
 
 adminRouter.get('/bookings', listAdminBookings);
 adminRouter.post('/bookings/filter', validate({ body: AdminBookingFilterSchema }), filterAdminBookings);
+adminRouter.get(
+  '/bookings/:bookingId/attachments',
+  validate({ params: BookingAttachmentBookingParamsSchema }),
+  listAdminBookingAttachments
+);
+adminRouter.get(
+  '/bookings/:bookingId/attachments/:attachmentId/download-url',
+  validate({ params: BookingAttachmentParamsSchema }),
+  getAdminAttachmentDownloadUrl
+);
+adminRouter.delete(
+  '/bookings/:bookingId/attachments/:attachmentId',
+  validate({ params: BookingAttachmentParamsSchema }),
+  deleteAdminBookingAttachment
+);
 adminRouter.patch(
   '/bookings/:id/status',
   validate({ params: AdminRowParamsSchema.omit({ table: true }), body: AdminBookingUpdateSchema }),

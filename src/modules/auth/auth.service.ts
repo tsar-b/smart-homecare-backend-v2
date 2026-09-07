@@ -180,6 +180,18 @@ export function sessionResponse(session: Session | null, profile: ProfileRow) {
   };
 }
 
+export function confirmationRequiredResponse() {
+  return {
+    token: null,
+    accessToken: null,
+    refreshToken: null,
+    expiresAt: null,
+    expiresIn: null,
+    user: null,
+    requiresEmailConfirmation: true
+  };
+}
+
 export function publicProfile(profile: ProfileRow) {
   return {
     _id: profile.id,

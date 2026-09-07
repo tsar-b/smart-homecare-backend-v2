@@ -2,7 +2,6 @@ import type { Request, Response } from 'express';
 import { HttpError } from '../../../core/errors.js';
 import { env } from '../../../core/env.js';
 import { issueProviderSession } from '../../auth/auth.service.js';
-import { supabaseAdmin } from '../../../db/supabaseAdmin.js';
 
 type KakaoProfile = {
   id?: number | string;
@@ -105,34 +104,16 @@ export async function expandKakaoAddress(req: Request, res: Response) {
   res.json(addresses.slice(0, 5));
 }
 
-export async function deleteKakaoAccount(req: Request, res: Response) {
-  if (req.user?.provider !== 'kakao') {
-    throw new HttpError(400, 'Current account is not linked to Kakao', 'KAKAO_ACCOUNT_REQUIRED');
-  }
-
-  const { data: identity } = await supabaseAdmin
-    .from('user_identities')
-    .select('provider_subject')
-    .eq('user_id', req.user.id)
-    .eq('provider', 'kakao')
-    .maybeSingle();
-
-  let unlinked = false;
-  if (identity?.provider_subject && env.KAKAO_ADMIN_KEY) {
-    const unlinkResponse = await fetchWithTimeout('https://kapi.kakao.com/v1/user/unlink', {
-      method: 'POST',
-      headers: {
-        Authorization: `KakaoAK ${env.KAKAO_ADMIN_KEY}`,
-        'Content-Type': 'application/x-www-form-urlencoded'
-      },
-      body: new URLSearchParams({ target_id_type: 'user_id', target_id: identity.provider_subject })
-    });
-    unlinked = unlinkResponse.ok || (await kakaoErrorCode(unlinkResponse)) === -101;
-  }
-
-  const { error } = await supabaseAdmin.auth.admin.deleteUser(req.user.authUserId);
-  if (error) throw new HttpError(400, 'Unable to delete Kakao account', 'ACCOUNT_DELETE_FAILED');
-  res.json({ ok: true, kakaoUnlinked: unlinked });
+export async function deleteKakaoAccount(_req: Request, _res: Response) {
+  // Account erasure needs an account-deleting state, session revocation, and a
+  // resumable provider/database/Storage saga. Performing any purge or Kakao
+  // unlink before that coordination exists can leave a partially deleted
+  // account when a concurrent upload or downstream deletion fails.
+  throw new HttpError(
+    503,
+    'Account deletion is unavailable until complete erasure and provider revocation are implemented',
+    'ACCOUNT_DELETION_UNAVAILABLE'
+  );
 }
 
 async function kakaoFetch<T>(url: string, accessToken: string) {
@@ -158,14 +139,6 @@ function normalizeKoreanPhone(value?: string) {
   if (digits.startsWith('82')) digits = `0${digits.slice(2)}`;
   if (!digits.startsWith('0') || digits.length < 9 || digits.length > 11) return null;
   return digits;
-}
-
-async function kakaoErrorCode(response: globalThis.Response) {
-  try {
-    return Number(((await response.json()) as { code?: number }).code);
-  } catch {
-    return null;
-  }
 }
 
 function fetchWithTimeout(url: string, init?: RequestInit) {

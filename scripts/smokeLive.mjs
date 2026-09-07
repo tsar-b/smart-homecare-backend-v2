@@ -5,8 +5,8 @@ import { createClient } from '@supabase/supabase-js';
 
 const apiUrl = String(process.env.SMOKE_API_URL ?? process.env.PUBLIC_API_URL ?? 'http://127.0.0.1:5050').replace(/\/$/, '');
 const supabaseUrl = required('SUPABASE_URL');
-const adminKey = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
-const publicKey = process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY;
+const adminKey = firstConfigured('SUPABASE_SECRET_KEY', 'SUPABASE_SERVICE_ROLE_KEY');
+const publicKey = firstConfigured('SUPABASE_PUBLISHABLE_KEY', 'SUPABASE_ANON_KEY');
 if (!adminKey) throw new Error('SUPABASE_SECRET_KEY or SUPABASE_SERVICE_ROLE_KEY is required');
 if (!publicKey) throw new Error('SUPABASE_PUBLISHABLE_KEY or SUPABASE_ANON_KEY is required');
 
@@ -19,7 +19,6 @@ const publicSupabase = createClient(supabaseUrl, publicKey, {
 const runId = randomUUID();
 const email = `shc-smoke-${runId}@example.com`;
 const phone = `010${randomInt(10_000_000, 99_999_999)}`;
-const guestPhone = `011${randomInt(10_000_000, 99_999_999)}`;
 const password = `Smoke-${randomUUID()}-Aa1!`;
 const testDate = futureDate(3_650 + randomInt(1, 1_000));
 const primaryClientRequestId = randomUUID();
@@ -28,6 +27,7 @@ const invalidSlotClientRequestId = randomUUID();
 const pastSlotClientRequestId = randomUUID();
 const cleanupProfileIds = new Set();
 const cleanupAuthUserIds = new Set();
+const cleanupStorageObjects = new Map();
 
 try {
   const health = await api('/health');
@@ -39,7 +39,8 @@ try {
   expectStatus(ready, 200, 'readiness');
   assert.equal(ready.body.dependencies.supabaseAuth, true);
   assert.equal(ready.body.dependencies.supabaseDatabase, true);
-  pass('Supabase Auth and database readiness');
+  assert.equal(ready.body.dependencies.supabaseStorage, true);
+  pass('Supabase Auth, database, and private bucket configuration readiness');
 
   const [publicUsers, publicBookings] = await Promise.all([
     publicSupabase.from('users').select('id'),
@@ -120,6 +121,9 @@ try {
   expectStatus(profileUpdate, 200, 'profile update');
   assert.equal(profileUpdate.body.addressDetail, 'Unit 2, updated');
   pass('profile update');
+
+  await verifyAuthenticatedStorageDenial(accessToken);
+  pass('authenticated users cannot directly list, read, insert, update, or delete booking media');
 
   const availability = await api(`/api/bookings/availability?date=${testDate}`);
   expectStatus(availability, 200, 'availability');
@@ -264,45 +268,17 @@ try {
     method: 'POST',
     body: {
       name: 'SHC Smoke Guest',
-      phone: guestPhone,
+      phone: `011${randomInt(10_000_000, 99_999_999)}`,
       address: 'Seoul guest smoke-test address'
     }
   });
-  expectStatus(guest, 201, 'guest registration');
-  assert.ok(guest.body.accessToken);
-  assert.equal(guest.body.reused, false);
-  cleanupProfileIds.add(guest.body.user.id);
-  const guestAuthUser = await authUserForToken(guest.body.accessToken);
-  cleanupAuthUserIds.add(guestAuthUser.id);
+  expectStatus(guest, 503, 'guest registration fail-closed boundary');
+  assert.equal(guest.body.code, 'GUEST_VERIFICATION_REQUIRED');
 
-  const guestMe = await api('/api/users/me', { token: guest.body.accessToken });
-  expectStatus(guestMe, 200, 'guest profile');
-  assert.equal(guestMe.body.isGuest, true);
-
-  const guestPhoneChange = await api('/api/users/me', {
-    method: 'PATCH',
-    token: guest.body.accessToken,
-    body: { phone: `012${randomInt(10_000_000, 99_999_999)}` }
-  });
-  expectStatus(guestPhoneChange, 409, 'unverified guest phone change');
-  assert.equal(guestPhoneChange.body.code, 'GUEST_PHONE_VERIFICATION_REQUIRED');
-
-  const duplicateGuest = await api('/api/auth/guest', {
-    method: 'POST',
-    body: {
-      name: 'SHC Smoke Guest',
-      phone: guestPhone,
-      address: 'Seoul guest smoke-test address'
-    }
-  });
-  expectStatus(duplicateGuest, 409, 'duplicate guest rejection');
-  assert.equal(duplicateGuest.body.code, 'GUEST_ALREADY_REGISTERED');
-
-  const guestDelete = await api('/api/users/me', { method: 'DELETE', token: guest.body.accessToken });
-  expectStatus(guestDelete, 200, 'guest deletion');
-  cleanupAuthUserIds.delete(guestAuthUser.id);
-  cleanupProfileIds.delete(guest.body.user.id);
-  pass('guest uniqueness, authorization, and cascading deletion');
+  const accountDelete = await api('/api/users/me', { method: 'DELETE', token: accessToken });
+  expectStatus(accountDelete, 503, 'account deletion fail-closed boundary');
+  assert.equal(accountDelete.body.code, 'ACCOUNT_DELETION_UNAVAILABLE');
+  pass('guest registration and account deletion fail closed');
 
   const logout = await api('/api/auth/logout', { method: 'POST', token: accessToken });
   expectStatus(logout, 204, 'logout');
@@ -366,7 +342,88 @@ async function authUserForToken(token) {
   return data.user;
 }
 
+async function verifyAuthenticatedStorageDenial(token) {
+  const authenticatedSupabase = createClient(supabaseUrl, publicKey, {
+    auth: { autoRefreshToken: false, detectSessionInUrl: false, persistSession: false },
+    global: { headers: { Authorization: `Bearer ${token}` } }
+  });
+  const fixtures = [
+    {
+      bucketId: 'shc-booking-images-v1',
+      extension: 'jpg',
+      contentType: 'image/jpeg',
+      bytes: Uint8Array.from([0xff, 0xd8, 0xff, 0xd9])
+    },
+    {
+      bucketId: 'shc-booking-videos-v1',
+      extension: 'mp4',
+      contentType: 'video/mp4',
+      bytes: Uint8Array.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d])
+    }
+  ];
+
+  for (const fixture of fixtures) {
+    const prefix = `policy-smoke/${runId}`;
+    const seedPath = `${prefix}/seed.${fixture.extension}`;
+    const unauthorizedPath = `${prefix}/unauthorized.${fixture.extension}`;
+    rememberStorageObject(fixture.bucketId, seedPath);
+    rememberStorageObject(fixture.bucketId, unauthorizedPath);
+
+    const seeded = await supabase.storage.from(fixture.bucketId).upload(seedPath, fixture.bytes, {
+      contentType: fixture.contentType,
+      upsert: false
+    });
+    if (seeded.error) throw seeded.error;
+
+    const listed = await authenticatedSupabase.storage.from(fixture.bucketId).list(prefix);
+    if (!listed.error) {
+      assert.ok(
+        !(listed.data ?? []).some((entry) => entry.name === `seed.${fixture.extension}`),
+        `Authenticated list exposed ${fixture.bucketId}/${seedPath}`
+      );
+    }
+
+    const downloaded = await authenticatedSupabase.storage.from(fixture.bucketId).download(seedPath);
+    assert.ok(downloaded.error, `Authenticated read unexpectedly succeeded for ${fixture.bucketId}/${seedPath}`);
+
+    const inserted = await authenticatedSupabase.storage.from(fixture.bucketId).upload(unauthorizedPath, fixture.bytes, {
+      contentType: fixture.contentType,
+      upsert: false
+    });
+    assert.ok(inserted.error, `Authenticated insert unexpectedly succeeded for ${fixture.bucketId}/${unauthorizedPath}`);
+
+    const replacement = new Uint8Array([...fixture.bytes, 0]);
+    const updated = await authenticatedSupabase.storage.from(fixture.bucketId).update(seedPath, replacement, {
+      contentType: fixture.contentType,
+      upsert: false
+    });
+    assert.ok(updated.error, `Authenticated update unexpectedly succeeded for ${fixture.bucketId}/${seedPath}`);
+
+    await authenticatedSupabase.storage.from(fixture.bucketId).remove([seedPath]);
+
+    const seedInfo = await supabase.storage.from(fixture.bucketId).info(seedPath);
+    assert.equal(seedInfo.error, null, `Authenticated delete removed ${fixture.bucketId}/${seedPath}`);
+    assert.equal(Number(seedInfo.data?.size), fixture.bytes.byteLength, `Authenticated update changed ${fixture.bucketId}/${seedPath}`);
+
+    const unauthorizedInfo = await supabase.storage.from(fixture.bucketId).info(unauthorizedPath);
+    assert.ok(unauthorizedInfo.error, `Authenticated insert created ${fixture.bucketId}/${unauthorizedPath}`);
+  }
+}
+
+function rememberStorageObject(bucketId, objectPath) {
+  const paths = cleanupStorageObjects.get(bucketId) ?? new Set();
+  paths.add(objectPath);
+  cleanupStorageObjects.set(bucketId, paths);
+}
+
 async function cleanup() {
+  const storageCleanupErrors = [];
+  for (const [bucketId, paths] of cleanupStorageObjects) {
+    if (!paths.size) continue;
+    const { error } = await supabase.storage.from(bucketId).remove([...paths]);
+    if (error) storageCleanupErrors.push(`${bucketId}: ${error.message}`);
+  }
+
   for (const profileId of cleanupProfileIds) {
     await supabase.from('audit_logs').delete().eq('actor_id', profileId);
     await supabase.from('idempotency_keys').delete().like('scope', `${profileId}:%`);
@@ -395,6 +452,7 @@ async function cleanup() {
     .select('id', { count: 'exact', head: true })
     .in('client_request_id', allClientRequestIds);
   assert.equal(count, 0, 'Smoke-test cleanup left booking rows behind');
+  assert.deepEqual(storageCleanupErrors, [], `Smoke-test Storage cleanup failed: ${storageCleanupErrors.join('; ')}`);
   pass('smoke-test cleanup');
 }
 
@@ -408,6 +466,14 @@ function required(name) {
   const value = process.env[name]?.trim();
   if (!value) throw new Error(`${name} is required`);
   return value;
+}
+
+function firstConfigured(...names) {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
 }
 
 function pass(label) {

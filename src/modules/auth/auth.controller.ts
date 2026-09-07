@@ -5,7 +5,7 @@ import { HttpError } from '../../core/errors.js';
 import { supabaseAdmin } from '../../db/supabaseAdmin.js';
 import { createSupabasePublicClient } from '../../db/supabaseClient.js';
 import {
-  issueProviderSession,
+  confirmationRequiredResponse,
   readProfileByAuthUserId,
   readProfileById,
   sessionResponse,
@@ -18,16 +18,25 @@ export async function register(req: Request, res: Response) {
   const client = createSupabasePublicClient();
   let authUserId: string | null = null;
   let session = null;
+  let emailConfirmed = false;
+
+  const userMetadata = {
+    name,
+    ...(phone ? { phone } : {}),
+    ...(address ? { address } : {}),
+    ...(addressDetail ? { address_detail: addressDetail } : {})
+  };
 
   if (env.AUTH_EMAIL_AUTO_CONFIRM) {
     const { data, error } = await supabaseAdmin.auth.admin.createUser({
       email: normalizedEmail,
       password,
       email_confirm: true,
-      user_metadata: { name, phone: phone ?? null }
+      user_metadata: userMetadata
     });
     if (error || !data.user) throw mapRegistrationError(error?.message);
     authUserId = data.user.id;
+    emailConfirmed = Boolean(data.user.email_confirmed_at);
 
     const signedIn = await client.auth.signInWithPassword({ email: normalizedEmail, password });
     if (signedIn.error || !signedIn.data.session) {
@@ -39,13 +48,19 @@ export async function register(req: Request, res: Response) {
     const { data, error } = await client.auth.signUp({
       email: normalizedEmail,
       password,
-      options: { data: { name, phone: phone ?? null } }
+      options: { data: userMetadata }
     });
     if (error || !data.user || data.user.identities?.length === 0) {
       throw mapRegistrationError(error?.message);
     }
     authUserId = data.user.id;
     session = data.session;
+    emailConfirmed = Boolean(data.user.email_confirmed_at);
+  }
+
+  if (!session || !emailConfirmed) {
+    res.status(202).json(confirmationRequiredResponse());
+    return;
   }
 
   try {
@@ -58,7 +73,7 @@ export async function register(req: Request, res: Response) {
       phone,
       address,
       addressDetail,
-      emailVerified: Boolean(session)
+      emailVerified: true
     });
     const profile = await readProfileById(identity.profileId);
     res.status(201).json(sessionResponse(session, profile));
@@ -82,16 +97,23 @@ export async function login(req: Request, res: Response) {
   if (auth.error || !auth.data.session || !auth.data.user) {
     throw new HttpError(401, 'Invalid email or password', 'INVALID_LOGIN');
   }
+  if (!auth.data.user.email_confirmed_at) {
+    throw new HttpError(403, 'Email confirmation is required', 'EMAIL_CONFIRMATION_REQUIRED');
+  }
 
   let profile = await readProfileByAuthUserId(auth.data.user.id);
   if (!profile) {
+    const metadata = registrationProfileMetadata(auth.data.user.user_metadata);
     const identity = await upsertAuthenticatedIdentity({
       authUserId: auth.data.user.id,
       provider: 'standard',
       providerSubject: normalizedEmail,
       email: normalizedEmail,
-      name: String(auth.data.user.user_metadata?.name ?? normalizedEmail.split('@')[0]),
-      emailVerified: Boolean(auth.data.user.email_confirmed_at)
+      name: metadata.name ?? normalizedEmail.split('@')[0],
+      phone: metadata.phone,
+      address: metadata.address,
+      addressDetail: metadata.addressDetail,
+      emailVerified: true
     });
     profile = await readProfileById(identity.profileId);
   } else if (auth.data.user.email_confirmed_at && !profile.email_verified) {
@@ -105,26 +127,12 @@ export async function login(req: Request, res: Response) {
   res.json(sessionResponse(auth.data.session, profile));
 }
 
-export async function registerGuest(req: Request, res: Response) {
-  const { name, phone, address, addressDetail } = req.body;
-  const normalizedPhone = phone.replace(/[^0-9]/g, '');
-  const result = await issueProviderSession(
-    {
-      provider: 'guest',
-      providerSubject: normalizedPhone,
-      name,
-      phone,
-      address,
-      addressDetail,
-      metadata: { issuer: 'shc-guest' }
-    },
-    { allowExistingSession: false }
+export async function registerGuest(_req: Request, _res: Response) {
+  throw new HttpError(
+    503,
+    'Guest registration requires verified phone ownership and is not available yet',
+    'GUEST_VERIFICATION_REQUIRED'
   );
-  res.status(201).json({
-    ...result.response,
-    userId: result.response.user.userId ?? result.response.user.id,
-    reused: !result.profileWasCreated
-  });
 }
 
 export async function refreshSession(req: Request, res: Response) {
@@ -213,4 +221,20 @@ function mapRegistrationError(message?: string) {
     return new HttpError(409, 'An account already exists for this email', 'IDENTITY_ALREADY_EXISTS');
   }
   return new HttpError(400, message ?? 'Registration failed', 'REGISTER_FAILED');
+}
+
+export function registrationProfileMetadata(value: unknown) {
+  const metadata = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  return {
+    name: metadataString(metadata.name, 120),
+    phone: metadataString(metadata.phone, 50),
+    address: metadataString(metadata.address, 500),
+    addressDetail: metadataString(metadata.address_detail ?? metadata.addressDetail, 500)
+  };
+}
+
+function metadataString(value: unknown, maxLength: number) {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed && trimmed.length <= maxLength ? trimmed : undefined;
 }

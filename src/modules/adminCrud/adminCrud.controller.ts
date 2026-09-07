@@ -6,6 +6,10 @@ import { supabaseAdmin } from '../../db/supabaseAdmin.js';
 import { clearInitializeCache } from '../appInitialize/appInitialize.controller.js';
 import { PROFILE_SELECT, publicProfile } from '../auth/auth.service.js';
 import { toBookingResponse } from '../bookings/booking.controller.js';
+import {
+  purgeAttachmentsForBooking,
+  purgeAttachmentsForUser
+} from '../bookingAttachments/bookingAttachment.service.js';
 
 type AdminResource = {
   dateField?: string;
@@ -98,7 +102,18 @@ export async function updateAdminBooking(req: Request, res: Response) {
 
 export async function deleteAdminBooking(req: Request, res: Response) {
   const id = paramValue(req.params.id);
-  const { data, error } = await supabaseAdmin.from('bookings').delete().eq('id', id).select('id').maybeSingle();
+  const { data: existing, error: readError } = await supabaseAdmin
+    .from('bookings')
+    .select('id')
+    .eq('id', id)
+    .maybeSingle();
+  if (readError) throw new HttpError(400, readError.message, 'BOOKING_DELETE_FAILED');
+  if (!existing) throw new HttpError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
+
+  const { data, error } = await purgeMediaBeforeDestructiveDelete(
+    () => purgeAttachmentsForBooking(id),
+    async () => await supabaseAdmin.from('bookings').delete().eq('id', id).select('id').maybeSingle()
+  );
   if (error) throw new HttpError(400, error.message, 'BOOKING_DELETE_FAILED');
   if (!data) throw new HttpError(404, 'Booking not found', 'BOOKING_NOT_FOUND');
   await writeAuditLog(req, 'bookings', id, 'delete');
@@ -142,9 +157,13 @@ export async function deleteAdminUser(req: Request, res: Response) {
   if (readError) throw new HttpError(400, readError.message, 'ADMIN_USER_DELETE_FAILED');
   if (!profile) throw new HttpError(404, 'User not found', 'USER_NOT_FOUND');
 
-  const deletion = profile.auth_user_id
-    ? await supabaseAdmin.auth.admin.deleteUser(profile.auth_user_id)
-    : await supabaseAdmin.from('users').delete().eq('id', id);
+  const deletion = await purgeMediaBeforeDestructiveDelete(
+    () => purgeAttachmentsForUser(id),
+    async () => {
+      if (profile.auth_user_id) return supabaseAdmin.auth.admin.deleteUser(profile.auth_user_id);
+      return await supabaseAdmin.from('users').delete().eq('id', id);
+    }
+  );
   if (deletion.error) throw new HttpError(400, deletion.error.message, 'ADMIN_USER_DELETE_FAILED');
   await writeAuditLog(req, 'users', id, 'delete');
   res.json({ ok: true });
@@ -296,6 +315,14 @@ async function readAdminBookings(filters?: { start?: string; end?: string; statu
   const { data, error } = await query;
   if (error) throw new HttpError(400, error.message, 'ADMIN_BOOKINGS_FAILED');
   return enrichBookings(data ?? []);
+}
+
+export async function purgeMediaBeforeDestructiveDelete<T>(
+  purge: () => Promise<unknown>,
+  destructiveDelete: () => Promise<T>
+) {
+  await purge();
+  return destructiveDelete();
 }
 
 async function enrichBookings(bookings: Record<string, any>[]) {

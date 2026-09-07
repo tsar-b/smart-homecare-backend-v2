@@ -4,7 +4,6 @@ import { login, logout, refreshSession, register, registerGuest, updatePassword 
 import { validate } from '../../middleware/validate.js';
 import {
   AppleLoginSchema,
-  GuestRegisterSchema,
   LoginSchema,
   RefreshSessionSchema,
   RegisterSchema,
@@ -25,7 +24,7 @@ const authLimiter = rateLimit({
 });
 
 authRouter.post('/register', authLimiter, validate({ body: RegisterSchema }), register);
-authRouter.post('/guest', authLimiter, validate({ body: GuestRegisterSchema }), registerGuest);
+authRouter.post('/guest', authLimiter, registerGuest);
 authRouter.post('/login', authLimiter, validate({ body: LoginSchema }), login);
 authRouter.post('/apple', authLimiter, validate({ body: AppleLoginSchema }), loginApple);
 authRouter.post('/refresh', authLimiter, validate({ body: RefreshSessionSchema }), refreshSession);

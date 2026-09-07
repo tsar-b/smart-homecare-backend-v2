@@ -3,15 +3,21 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsx --test src/middleware/*.test.ts src/modules/auth/*.test.ts src/modules/bookings/*.test.ts",
+    "test": "tsx --test src/middleware/idempotencyMiddleware.test.ts src/middleware/validate.test.ts src/modules/auth/auth.schema.test.ts src/modules/auth/auth.safety.test.ts src/modules/auth/identity.service.test.ts src/modules/bookings/booking.schema.test.ts src/modules/bookingAttachments/bookingAttachment.test.ts",
     "test:live": "node scripts/smokeLive.mjs",
+    "test:live:media": "node scripts/smokeLiveMedia.mjs",
     "env:bootstrap": "node scripts/bootstrapLocalEnv.mjs",
     "db:migrate": "node scripts/applyMigration.mjs",
-    "db:verify-border": "node scripts/verifyDatabaseBorder.mjs"
+    "db:verify-border": "node scripts/verifyDatabaseBorder.mjs",
+    "storage:ensure-booking-media": "node scripts/ensureBookingMediaBuckets.mjs",
+    "storage:reconcile-booking-media": "node scripts/reconcileBookingMedia.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.113.0",

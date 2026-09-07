@@ -38,15 +38,8 @@ const SelectedOptionSchema = z
     message: 'Each selected option requires a selected value'
   });
 
-export const CreateBookingSchema = z.object({
+const BookingFields = {
   client_request_id: z.string().uuid(),
-  asset_id: z.string().optional(),
-  subtype_id: z.string().optional(),
-  service_type_id: z.string().optional(),
-  pricing_tier_id: z.string().optional(),
-  service_type: z.string().min(1).max(120).optional(),
-  subtype: z.string().max(120).optional(),
-  tier: z.string().max(120).optional(),
   options: z.array(SelectedOptionSchema).max(30).default([]),
   selected_options: z.array(SelectedOptionSchema).max(30).optional(),
   name: z.string().trim().min(1).max(120).optional(),
@@ -58,7 +51,26 @@ export const CreateBookingSchema = z.object({
   reservation_time: TimeSchema,
   timezone: TimezoneSchema.default('Asia/Seoul'),
   memo: z.string().max(2000).optional(),
-  symptom: z.string().max(2000).optional(),
+  symptom: z.string().max(2000).optional()
+};
+
+export const CreateBookingSchema = z.object({
+  ...BookingFields,
+  subtype_id: z.string().min(1).max(200),
+  service_type_id: z.string().min(1).max(200),
+  pricing_tier_id: z.string().min(1).max(200),
+  total_price: z.never({ message: 'total_price is not accepted by the canonical booking API' }).optional()
+});
+
+export const LegacyCreateBookingSchema = z.object({
+  ...BookingFields,
+  asset_id: z.string().optional(),
+  subtype_id: z.string().optional(),
+  service_type_id: z.string().optional(),
+  pricing_tier_id: z.string().optional(),
+  service_type: z.string().min(1).max(120).optional(),
+  subtype: z.string().max(120).optional(),
+  tier: z.string().max(120).optional(),
   total_price: z.number().int().min(-1).optional()
 }).refine((value) => Boolean(value.subtype_id ?? value.asset_id ?? value.subtype), {
   message: 'A subtype reference is required',

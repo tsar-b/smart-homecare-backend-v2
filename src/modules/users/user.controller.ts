@@ -56,10 +56,12 @@ export async function updateMe(req: Request, res: Response) {
   res.json(publicProfile(data as any));
 }
 
-export async function deleteMe(req: Request, res: Response) {
-  const { error } = await supabaseAdmin.auth.admin.deleteUser(req.user!.authUserId);
-  if (error) throw new HttpError(400, error.message, 'USER_DELETE_FAILED');
-  res.json({ ok: true });
+export async function deleteMe(_req: Request, _res: Response) {
+  throw new HttpError(
+    503,
+    'Account deletion is unavailable until complete erasure and provider revocation are implemented',
+    'ACCOUNT_DELETION_UNAVAILABLE'
+  );
 }
 
 async function loadProfile(id: string) {

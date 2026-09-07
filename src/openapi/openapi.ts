@@ -24,7 +24,7 @@ export const openApiDocument = {
   info: {
     title: 'Smart HomeCare Backend API',
     version: '2.0.0',
-    description: 'Supabase-only API for SHC authentication, catalog, bookings, profiles, and administration.'
+    description: 'Supabase-only API for SHC authentication, catalog, bookings, private booking media, profiles, and administration.'
   },
   servers: [{ url: env.PUBLIC_API_URL }],
   tags: [
@@ -99,6 +99,20 @@ export const openApiDocument = {
           requiresEmailConfirmation: { type: 'boolean' }
         }
       },
+      RegistrationPending: {
+        type: 'object',
+        required: ['token', 'accessToken', 'refreshToken', 'expiresAt', 'expiresIn', 'user', 'requiresEmailConfirmation'],
+        properties: {
+          token: { type: 'null' },
+          accessToken: { type: 'null' },
+          refreshToken: { type: 'null' },
+          expiresAt: { type: 'null' },
+          expiresIn: { type: 'null' },
+          user: { type: 'null' },
+          requiresEmailConfirmation: { const: true }
+        },
+        additionalProperties: false
+      },
       RegisterInput: {
         type: 'object',
         required: ['name', 'email', 'password'],
@@ -143,6 +157,7 @@ export const openApiDocument = {
           'client_request_id',
           'subtype_id',
           'service_type_id',
+          'pricing_tier_id',
           'reservation_date',
           'reservation_time'
         ],
@@ -161,7 +176,32 @@ export const openApiDocument = {
           timezone: { type: 'string', default: 'Asia/Seoul' },
           memo: { type: 'string', maxLength: 2000 },
           symptom: { type: 'string', maxLength: 2000 }
-        }
+        },
+        additionalProperties: false
+      },
+      LegacyBookingCreate: {
+        type: 'object',
+        description: 'Deprecated V1 compatibility request. New clients must use /api/bookings.',
+        required: ['client_request_id', 'reservation_date', 'reservation_time'],
+        properties: {
+          client_request_id: { type: 'string', format: 'uuid' },
+          asset_id: { type: 'string' },
+          subtype_id: { type: 'string' },
+          subtype: { type: 'string' },
+          service_type_id: { type: 'string' },
+          service_type: { type: 'string' },
+          pricing_tier_id: { type: 'string' },
+          tier: { type: 'string' },
+          total_price: { type: 'integer', minimum: -1 },
+          options: { type: 'array', maxItems: 30, items: { $ref: '#/components/schemas/SelectedOption' } },
+          reservation_date: { type: 'string', format: 'date' },
+          reservation_time: { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' },
+          timezone: { type: 'string', default: 'Asia/Seoul' }
+        },
+        allOf: [
+          { anyOf: [{ required: ['subtype_id'] }, { required: ['asset_id'] }, { required: ['subtype'] }] },
+          { anyOf: [{ required: ['service_type_id'] }, { required: ['service_type'] }] }
+        ]
       },
       Booking: {
         type: 'object',
@@ -184,6 +224,90 @@ export const openApiDocument = {
           price_source: { type: 'string', enum: ['catalog', 'legacy_client'] }
         },
         additionalProperties: true
+      },
+      BookingAttachment: {
+        type: 'object',
+        required: ['id', 'clientAttachmentId', 'bookingId', 'kind', 'contentType', 'sizeBytes', 'status', 'createdAt', 'completedAt'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          clientAttachmentId: { type: 'string', format: 'uuid' },
+          bookingId: { type: 'string' },
+          kind: { type: 'string', enum: ['image', 'video'] },
+          contentType: {
+            type: 'string',
+            enum: ['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime']
+          },
+          sizeBytes: { type: 'integer', minimum: 1, maximum: 45000000 },
+          status: { type: 'string', enum: ['pending', 'ready'] },
+          createdAt: { type: 'string', format: 'date-time' },
+          completedAt: { type: ['string', 'null'], format: 'date-time' }
+        },
+        additionalProperties: false
+      },
+      BookingAttachmentIntentInput: {
+        type: 'object',
+        required: ['clientAttachmentId', 'kind', 'contentType', 'sizeBytes'],
+        properties: {
+          clientAttachmentId: { type: 'string', format: 'uuid' },
+          kind: { type: 'string', enum: ['image', 'video'] },
+          contentType: {
+            type: 'string',
+            enum: ['image/jpeg', 'image/png', 'image/webp', 'video/mp4', 'video/quicktime']
+          },
+          sizeBytes: { type: 'integer', minimum: 1, maximum: 45000000 }
+        },
+        additionalProperties: false
+      },
+      BookingAttachmentUploadIntent: {
+        type: 'object',
+        required: [
+          'attachment',
+          'uploadMethod',
+          'signedUrl',
+          'tusEndpoint',
+          'uploadToken',
+          'storageApiKey',
+          'chunkSizeBytes',
+          'expiresAt',
+          'bucketId',
+          'objectPath'
+        ],
+        properties: {
+          attachment: { $ref: '#/components/schemas/BookingAttachment' },
+          uploadMethod: {
+            type: 'string',
+            enum: ['signed_put', 'tus'],
+            description: 'tus is returned only when the trusted booking-media pilot is enabled.'
+          },
+          signedUrl: { type: ['string', 'null'], format: 'uri' },
+          tusEndpoint: { type: ['string', 'null'], format: 'uri' },
+          uploadToken: {
+            type: 'string',
+            description: 'Short-lived path-bound capability. Never persist or log it; use it as x-signature for TUS.'
+          },
+          storageApiKey: {
+            type: ['string', 'null'],
+            description: 'Public Supabase publishable/anon key required as apikey by signed TUS. Null for signed PUT. This is never a backend secret/service-role key.'
+          },
+          chunkSizeBytes: { type: 'integer', const: 6291456 },
+          expiresAt: {
+            type: 'string',
+            format: 'date-time',
+            description: 'Signed token expiry. Internal orphan-prevention tombstones use a longer worst-case TUS window.'
+          },
+          bucketId: { type: 'string', enum: ['shc-booking-images-v1', 'shc-booking-videos-v1'] },
+          objectPath: { type: 'string' }
+        },
+        additionalProperties: false
+      },
+      BookingAttachmentDownload: {
+        type: 'object',
+        required: ['downloadUrl', 'downloadUrlExpiresAt'],
+        properties: {
+          downloadUrl: { type: 'string', format: 'uri' },
+          downloadUrlExpiresAt: { type: 'string', format: 'date-time' }
+        },
+        additionalProperties: false
       }
     }
   },
@@ -200,6 +324,7 @@ export const openApiDocument = {
       get: {
         tags: ['System'],
         operationId: 'readiness',
+        description: 'Checks Supabase Auth/database reachability and private media bucket configuration. It does not prove the Storage RLS policy; run db:verify-border and the live policy smoke at deployment.',
         security: [],
         responses: {
           '200': jsonResponse('Supabase Auth and database are reachable'),
@@ -221,7 +346,12 @@ export const openApiDocument = {
         operationId: 'register',
         security: [],
         requestBody: jsonBody({ $ref: '#/components/schemas/RegisterInput' }),
-        responses: { '201': jsonResponse('Account and SHC profile created', { $ref: '#/components/schemas/Session' }), '400': errorResponse, '409': errorResponse }
+        responses: {
+          '201': jsonResponse('Confirmed account and SHC profile created', { $ref: '#/components/schemas/Session' }),
+          '202': jsonResponse('Email confirmation required; no SHC profile has been read or linked', { $ref: '#/components/schemas/RegistrationPending' }),
+          '400': errorResponse,
+          '409': errorResponse
+        }
       }
     },
     '/api/auth/login': {
@@ -239,7 +369,8 @@ export const openApiDocument = {
         operationId: 'registerGuest',
         security: [],
         requestBody: jsonBody({ $ref: '#/components/schemas/GuestInput' }),
-        responses: { '201': jsonResponse('Guest session issued', { $ref: '#/components/schemas/Session' }), '409': errorResponse }
+        description: 'Disabled until verified phone ownership is implemented.',
+        responses: { '503': jsonResponse('GUEST_VERIFICATION_REQUIRED', { $ref: '#/components/schemas/Error' }) }
       }
     },
     '/api/auth/apple': {
@@ -311,7 +442,10 @@ export const openApiDocument = {
         tags: ['Users'],
         operationId: 'deleteCurrentUser',
         security: [{ bearerAuth: [] }],
-        responses: { '200': jsonResponse('Auth account, profile, and dependent bookings deleted'), ...authenticatedErrors }
+        responses: {
+          '503': jsonResponse('ACCOUNT_DELETION_UNAVAILABLE until complete erasure and provider revocation exist', { $ref: '#/components/schemas/Error' }),
+          ...authenticatedErrors
+        }
       }
     },
     '/api/catalog/initialize': {
@@ -334,6 +468,18 @@ export const openApiDocument = {
         parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
         requestBody: jsonBody({ $ref: '#/components/schemas/BookingCreate' }),
         responses: { '201': jsonResponse('Booking created or replayed', { $ref: '#/components/schemas/Booking' }), '400': errorResponse, '409': errorResponse, ...authenticatedErrors }
+      }
+    },
+    '/api/booking': {
+      post: {
+        tags: ['Bookings'],
+        operationId: 'createLegacyBooking',
+        deprecated: true,
+        description: 'Temporary V1 compatibility route. It is the only route that accepts legacy client total_price.',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
+        requestBody: jsonBody({ $ref: '#/components/schemas/LegacyBookingCreate' }),
+        responses: { '201': jsonResponse('Legacy booking created or replayed', { $ref: '#/components/schemas/Booking' }), '400': errorResponse, '409': errorResponse, ...authenticatedErrors }
       }
     },
     '/api/bookings/history': {
@@ -371,6 +517,97 @@ export const openApiDocument = {
         responses: { '200': jsonResponse('Booking cancelled', { $ref: '#/components/schemas/Booking' }), '409': errorResponse, ...authenticatedErrors }
       }
     },
+    '/api/bookings/{bookingId}/attachments/upload-intents': {
+      post: {
+        tags: ['Bookings'],
+        operationId: 'createBookingAttachmentUploadIntent',
+        description: 'Creates a stable private Storage destination. Do not send Idempotency-Key; clientAttachmentId is the retry identity and upload capabilities are never persisted in the generic idempotency store. Upload with object Cache-Control max-age=0. Limits include 12 intents per authenticated user per minute, 12 rows/100000000 reserved bytes per owner, and the service-role-configured project circuit breaker (default 100 rows/500000000 bytes). Video and TUS intents are default-off and require the trusted media pilot flag.',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: jsonBody({ $ref: '#/components/schemas/BookingAttachmentIntentInput' }),
+        responses: {
+          '200': jsonResponse('Existing pending intent refreshed', { $ref: '#/components/schemas/BookingAttachmentUploadIntent' }),
+          '201': jsonResponse('Upload intent created', { $ref: '#/components/schemas/BookingAttachmentUploadIntent' }),
+          '400': errorResponse,
+          '404': errorResponse,
+          '409': errorResponse,
+          '429': errorResponse,
+          '503': jsonResponse(
+            'Media unavailable. BOOKING_MEDIA_PILOT_DISABLED means video/TUS is disabled; PROJECT_MEDIA_LIMIT_REACHED means the service-level reservation circuit breaker is full.',
+            { $ref: '#/components/schemas/Error' }
+          ),
+          ...authenticatedErrors
+        }
+      }
+    },
+    '/api/bookings/{bookingId}/attachments': {
+      get: {
+        tags: ['Bookings'],
+        operationId: 'listBookingAttachments',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': jsonResponse('Owned booking attachment metadata; request a download URL only when opening media', {
+            type: 'array',
+            maxItems: 6,
+            items: { $ref: '#/components/schemas/BookingAttachment' }
+          }),
+          '404': errorResponse,
+          '503': errorResponse,
+          ...authenticatedErrors
+        }
+      }
+    },
+    '/api/bookings/{bookingId}/attachments/{attachmentId}/complete': {
+      post: {
+        tags: ['Bookings'],
+        operationId: 'completeBookingAttachment',
+        description: 'Verifies stored size, MIME metadata, and a bounded allowlisted header signature before publishing an uploaded object. This is not full decoding, malware scanning, or duration enforcement.',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'attachmentId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+        ],
+        responses: {
+          '200': jsonResponse('Attachment is ready', { $ref: '#/components/schemas/BookingAttachment' }),
+          '404': errorResponse,
+          '409': errorResponse,
+          '422': errorResponse,
+          '503': errorResponse,
+          ...authenticatedErrors
+        }
+      }
+    },
+    '/api/bookings/{bookingId}/attachments/{attachmentId}/download-url': {
+      get: {
+        tags: ['Bookings'],
+        operationId: 'getBookingAttachmentDownloadUrl',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'attachmentId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+        ],
+        responses: {
+          '200': jsonResponse('Fresh five-minute private download capability', { $ref: '#/components/schemas/BookingAttachmentDownload' }),
+          '404': errorResponse,
+          '503': errorResponse,
+          ...authenticatedErrors
+        }
+      }
+    },
+    '/api/bookings/{bookingId}/attachments/{attachmentId}': {
+      delete: {
+        tags: ['Bookings'],
+        operationId: 'deleteBookingAttachment',
+        description: 'Removes the object and retains a private tombstone until every signed write capability has expired.',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'attachmentId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+        ],
+        responses: { '204': { description: 'Attachment hidden and deletion accepted' }, '404': errorResponse, '409': errorResponse, '503': errorResponse, ...authenticatedErrors }
+      }
+    },
     '/api/kakao/login': {
       post: {
         tags: ['Kakao'],
@@ -403,7 +640,13 @@ export const openApiDocument = {
         tags: ['Kakao'],
         operationId: 'deleteKakaoAccount',
         security: [{ bearerAuth: [] }],
-        responses: { '200': jsonResponse('Kakao-linked SHC account deleted'), ...authenticatedErrors }
+        responses: {
+          '503': jsonResponse(
+            'ACCOUNT_DELETION_UNAVAILABLE until an account-deleting state, session revocation, provider unlink, Storage purge, and database erasure saga exist',
+            { $ref: '#/components/schemas/Error' }
+          ),
+          ...authenticatedErrors
+        }
       }
     },
     '/api/admin/bookings': {
@@ -446,7 +689,49 @@ export const openApiDocument = {
         operationId: 'adminDeleteBooking',
         security: [{ bearerAuth: [] }],
         parameters: [idParameter],
-        responses: { '200': jsonResponse('Booking deleted'), '404': errorResponse, ...authenticatedErrors }
+        responses: { '200': jsonResponse('Booking deleted'), '404': errorResponse, '503': errorResponse, ...authenticatedErrors }
+      }
+    },
+    '/api/admin/bookings/{bookingId}/attachments': {
+      get: {
+        tags: ['Admin'],
+        operationId: 'adminListBookingAttachments',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: {
+          '200': jsonResponse('Booking attachment metadata; listing writes a best-effort operational audit row but does not mint download capabilities', {
+            type: 'array',
+            maxItems: 6,
+            items: { $ref: '#/components/schemas/BookingAttachment' }
+          }),
+          '404': errorResponse,
+          '503': errorResponse,
+          ...authenticatedErrors
+        }
+      }
+    },
+    '/api/admin/bookings/{bookingId}/attachments/{attachmentId}/download-url': {
+      get: {
+        tags: ['Admin'],
+        operationId: 'adminGetBookingAttachmentDownloadUrl',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'attachmentId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+        ],
+        responses: { '200': jsonResponse('Private download capability with best-effort operational audit', { $ref: '#/components/schemas/BookingAttachmentDownload' }), '404': errorResponse, '503': errorResponse, ...authenticatedErrors }
+      }
+    },
+    '/api/admin/bookings/{bookingId}/attachments/{attachmentId}': {
+      delete: {
+        tags: ['Admin'],
+        operationId: 'adminDeleteBookingAttachment',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { name: 'bookingId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'attachmentId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }
+        ],
+        responses: { '204': { description: 'Attachment deletion accepted; best-effort operational audit is attempted' }, '404': errorResponse, '503': errorResponse, ...authenticatedErrors }
       }
     },
     '/api/admin/users': {
@@ -473,7 +758,7 @@ export const openApiDocument = {
         operationId: 'adminDeleteUser',
         security: [{ bearerAuth: [] }],
         parameters: [idParameter],
-        responses: { '200': jsonResponse('User and dependent records deleted'), '404': errorResponse, '409': errorResponse, ...authenticatedErrors }
+        responses: { '200': jsonResponse('User and dependent records deleted'), '404': errorResponse, '409': errorResponse, '503': errorResponse, ...authenticatedErrors }
       }
     },
     '/api/admin/data/{table}': {
@@ -525,7 +810,6 @@ export const openApiDocument = {
     '/api/options': '/api/catalog/options',
     '/api/pricing': '/api/catalog/pricing',
     '/api/timeslots': '/api/bookings/availability',
-    '/api/booking': '/api/bookings',
     '/api/history': '/api/bookings/history',
     '/api/historydetail/{id}': '/api/bookings/{id}'
   }

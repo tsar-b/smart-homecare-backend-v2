@@ -6,6 +6,14 @@ import { assertBookableSlot, buildBookingQuote, isSlotInPast, normalizeSlots } f
 const ACTIVE_STATUSES = ['대기', '확정', 'pending', 'confirmed', 'approved'];
 
 export async function createBooking(req: Request, res: Response) {
+  return createBookingWithMode(req, res, false);
+}
+
+export async function createLegacyBooking(req: Request, res: Response) {
+  return createBookingWithMode(req, res, true);
+}
+
+async function createBookingWithMode(req: Request, res: Response, allowLegacyClientPrice: boolean) {
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('users')
     .select('name, phone, address, address_detail, is_guest')
@@ -14,26 +22,19 @@ export async function createBooking(req: Request, res: Response) {
   if (profileError || !profile) throw new HttpError(404, 'User profile not found', 'PROFILE_NOT_FOUND');
 
   const [quote] = await Promise.all([
-    buildBookingQuote({
-      subtypeReference: req.body.subtype_id ?? req.body.asset_id ?? req.body.subtype,
-      serviceTypeReference: req.body.service_type_id ?? req.body.service_type,
-      pricingTierId: req.body.pricing_tier_id,
-      tier: req.body.tier,
-      options: req.body.selected_options ?? req.body.options,
-      legacyTotalPrice: req.body.total_price
-    }),
+    buildBookingQuote(bookingQuoteInput(req.body, allowLegacyClientPrice)),
     assertBookableSlot(req.body.reservation_date, req.body.reservation_time, req.body.timezone)
   ]);
 
   const payload = {
     client_request_id: req.body.client_request_id,
-    asset_id: req.body.asset_id ?? quote.subtype.id,
+    asset_id: allowLegacyClientPrice ? req.body.asset_id ?? quote.subtype.id : quote.subtype.id,
     service_type_id: quote.serviceType.id,
     subtype_id: quote.subtype.id,
     pricing_tier_id: quote.pricingTier?.id ?? null,
     service_type: quote.serviceType.key,
     subtype: quote.subtype.label,
-    tier: quote.pricingTier?.key ?? req.body.tier ?? null,
+    tier: quote.pricingTier?.key ?? (allowLegacyClientPrice ? req.body.tier : null) ?? null,
     options: quote.optionSnapshots,
     name: req.body.name ?? profile.name ?? 'Guest',
     phone: req.body.phone ?? profile.phone ?? null,
@@ -64,6 +65,21 @@ export async function createBooking(req: Request, res: Response) {
   }
   if (error) throw new HttpError(400, error.message, 'BOOKING_CREATE_FAILED');
   res.status(201).json(toBookingResponse(data));
+}
+
+export function bookingQuoteInput(body: Record<string, any>, allowLegacyClientPrice: boolean) {
+  return {
+    subtypeReference: allowLegacyClientPrice
+      ? body.subtype_id ?? body.asset_id ?? body.subtype
+      : body.subtype_id,
+    serviceTypeReference: allowLegacyClientPrice
+      ? body.service_type_id ?? body.service_type
+      : body.service_type_id,
+    pricingTierId: body.pricing_tier_id,
+    tier: allowLegacyClientPrice ? body.tier : undefined,
+    options: body.selected_options ?? body.options ?? [],
+    legacyTotalPrice: allowLegacyClientPrice ? body.total_price : undefined
+  };
 }
 
 export async function getBookingHistory(req: Request, res: Response) {
