@@ -33,11 +33,7 @@ export function createHttpServer() {
       supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 }),
       supabaseAdmin.storage.listBuckets()
     ]);
-    const databaseReady =
-      database.status === 'fulfilled' &&
-      !database.value.error &&
-      attachmentDatabase.status === 'fulfilled' &&
-      !attachmentDatabase.value.error;
+    const databaseReady = databaseProbeIsReady(database) && databaseProbeIsReady(attachmentDatabase);
     const authReady = auth.status === 'fulfilled' && !auth.value.error;
     const storageReady =
       storage.status === 'fulfilled' &&
@@ -66,6 +62,23 @@ export function createHttpServer() {
   app.use(errorHandler);
 
   return app;
+}
+
+type DatabaseProbe = { error: unknown; status: number; count: number | null };
+
+export function databaseProbeIsReady(probe: PromiseSettledResult<DatabaseProbe>) {
+  // PostgREST HEAD errors have no JSON body. The SDK can consequently return
+  // error: null for a missing table (and can normalize a bodyless 404 to 204).
+  // Require positive evidence from the exact-count response, not just no error.
+  return (
+    probe.status === 'fulfilled' &&
+    !probe.value.error &&
+    probe.value.status >= 200 &&
+    probe.value.status < 300 &&
+    typeof probe.value.count === 'number' &&
+    Number.isSafeInteger(probe.value.count) &&
+    probe.value.count >= 0
+  );
 }
 
 type MediaBucket = {

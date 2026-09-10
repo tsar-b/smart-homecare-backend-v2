@@ -1,5 +1,8 @@
 # Smart HomeCare Backend v2
 
+For the verified Android integration results and current Mac setup checklist,
+see [live QA and Mac handoff](docs/LIVE_QA_MAC_HANDOFF_2026-09-11.md).
+
 SHC v2 is the Supabase/PostgreSQL replacement for the live MongoDB v1 backend.
 MongoDB is not a runtime dependency. The v1 source is preserved in the dedicated
 v1 repositories and this repository's Git history, rather than packaged in the
