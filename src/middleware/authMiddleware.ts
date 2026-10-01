@@ -9,7 +9,7 @@ export type AuthUser = {
   legacyUserId?: number;
   isAdmin: boolean;
   isGuest: boolean;
-  provider?: 'standard' | 'kakao' | 'apple' | 'guest';
+  provider?: 'standard' | 'kakao' | 'apple' | 'guest' | 'google';
 };
 
 declare global {

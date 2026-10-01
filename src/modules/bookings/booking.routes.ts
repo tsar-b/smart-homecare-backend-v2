@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/authMiddleware.js';
+import { requireBookingMember } from '../../middleware/memberBooking.js';
 import { requireIdempotencyKey } from '../../middleware/idempotencyMiddleware.js';
 import { validate } from '../../middleware/validate.js';
 import {
@@ -26,7 +27,7 @@ import { bookingAttachmentIntentLimiter } from '../bookingAttachments/bookingAtt
 
 export const bookingRouter = Router();
 
-bookingRouter.post('/', requireAuth, requireIdempotencyKey, validate({ body: CreateBookingSchema }), createBooking);
+bookingRouter.post('/', requireAuth, requireBookingMember, requireIdempotencyKey, validate({ body: CreateBookingSchema }), createBooking);
 bookingRouter.get('/history', requireAuth, getBookingHistory);
 bookingRouter.get('/availability', validate({ query: AvailabilityQuerySchema }), getAvailableTimeSlots);
 bookingRouter.post(

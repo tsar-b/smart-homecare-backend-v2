@@ -34,6 +34,9 @@ export const EnvSchema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: OptionalEnvironmentString,
   AUTH_EMAIL_AUTO_CONFIRM: BooleanString.default('false'),
   OAUTH_SESSION_EMAIL_DOMAIN: z.string().min(3).default('auth.shc.invalid'),
+  // Explicit opt-in after configuring the same providers in Supabase Auth.
+  SUPABASE_OAUTH_PROVIDERS: z.string().default(''),
+  AUTH_REDIRECT_URLS: z.string().default('smarthomecareapplication://auth/callback'),
   KAKAO_REST_API_KEY: OptionalEnvironmentString,
   KAKAO_ADMIN_KEY: OptionalEnvironmentString,
   APPLE_CLIENT_IDS: OptionalEnvironmentString

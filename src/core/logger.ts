@@ -2,6 +2,10 @@ import pino from 'pino';
 import { env } from './env.js';
 
 export const LOGGER_REDACTIONS = [
+    'code', '*.code', '*.*.code',
+    'codeVerifier', '*.codeVerifier', '*.*.codeVerifier',
+    'authorizationUrl', '*.authorizationUrl', '*.*.authorizationUrl',
+    'password', '*.*.password',
     'req.headers.authorization',
     'req.headers.cookie',
     'res.headers["set-cookie"]',

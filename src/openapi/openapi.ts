@@ -12,6 +12,17 @@ const jsonResponse = (description: string, schema?: Record<string, unknown>) => 
 
 const errorResponse = { $ref: '#/components/responses/Error' };
 const authenticatedErrors = { '401': errorResponse, '403': errorResponse };
+const browserStartProperties = {
+  redirectUri: { type: 'string', maxLength: 500, description: 'Exact server-allowlisted callback URI without query or fragment.' },
+  state: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+  codeChallenge: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' }
+};
+const exchangeProperties = {
+  code: { type: 'string', minLength: 1, maxLength: 2048 },
+  codeVerifier: { type: 'string', minLength: 43, maxLength: 128 }
+};
+const providerProperty = { type: 'string', enum: ['kakao', 'apple', 'google'] };
+const browserErrors = { '400': errorResponse, '401': errorResponse, '403': errorResponse, '409': errorResponse, '429': errorResponse, '503': errorResponse };
 const idParameter = {
   name: 'id',
   in: 'path',
@@ -76,7 +87,7 @@ export const openApiDocument = {
           name: { type: ['string', 'null'] },
           phone: { type: ['string', 'null'] },
           email: { type: ['string', 'null'], format: 'email' },
-          provider: { type: ['string', 'null'], enum: ['standard', 'guest', 'kakao', 'apple', null] },
+          provider: { type: ['string', 'null'], enum: ['standard', 'guest', 'kakao', 'apple', 'google', null] },
           isAdmin: { type: 'boolean' },
           isGuest: { type: 'boolean' },
           emailVerified: { type: 'boolean' },
@@ -339,6 +350,37 @@ export const openApiDocument = {
         security: [],
         responses: { '200': jsonResponse('Versioned catalog and application bootstrap payload') }
       }
+    },
+    '/api/auth/browser/config': {
+      get: { tags: ['Authentication'], operationId: 'browserAuthConfig', security: [],
+        responses: { '200': jsonResponse('Enabled providers and recovery support; no-store', {
+          type: 'object', properties: { providers: { type: 'array', items: providerProperty }, recovery: { type: 'boolean' } }
+        }) } }
+    },
+    '/api/auth/oauth/start': {
+      post: { tags: ['Authentication'], operationId: 'startBrowserOAuth', security: [],
+        requestBody: jsonBody({ type: 'object', additionalProperties: false,
+          required: ['provider', 'redirectUri', 'state', 'codeChallenge'], properties: { ...browserStartProperties, provider: providerProperty } }),
+        responses: { '200': jsonResponse('Supabase authorization URL; no-store', { type: 'object', properties: { authorizationUrl: { type: 'string', format: 'uri' } } }), ...browserErrors } }
+    },
+    '/api/auth/oauth/exchange': {
+      post: { tags: ['Authentication'], operationId: 'exchangeBrowserOAuth', security: [],
+        requestBody: jsonBody({ type: 'object', additionalProperties: false,
+          required: ['provider', 'code', 'codeVerifier'], properties: { ...exchangeProperties, provider: providerProperty } }),
+        responses: { '200': jsonResponse('Verified SHC session; no-store', { $ref: '#/components/schemas/Session' }), ...browserErrors } }
+    },
+    '/api/auth/recovery/start': {
+      post: { tags: ['Authentication'], operationId: 'requestPasswordRecovery', security: [],
+        requestBody: jsonBody({ type: 'object', additionalProperties: false,
+          required: ['email', 'redirectUri', 'state', 'codeChallenge'], properties: { ...browserStartProperties, email: { type: 'string', format: 'email', maxLength: 254 } } }),
+        responses: { '202': jsonResponse('Generic response regardless of account existence; no-store'), ...browserErrors } }
+    },
+    '/api/auth/recovery/finish': {
+      post: { tags: ['Authentication'], operationId: 'finishPasswordRecovery', security: [],
+        requestBody: jsonBody({ type: 'object', additionalProperties: false,
+          required: ['code', 'codeVerifier', 'password'], properties: { ...exchangeProperties,
+            password: { type: 'string', minLength: 8, maxLength: 200, description: 'At least one Latin letter and one digit; whitespace is preserved.' } } }),
+        responses: { '200': jsonResponse('Password changed; no app session returned; sign in again'), ...browserErrors } }
     },
     '/api/auth/register': {
       post: {

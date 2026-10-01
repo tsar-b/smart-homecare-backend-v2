@@ -88,14 +88,22 @@ export async function login(req: Request, res: Response) {
   const normalizedEmail = email.trim().toLowerCase();
 
   const client = createSupabasePublicClient();
-  let auth = await client.auth.signInWithPassword({ email: normalizedEmail, password });
+  let auth;
+  try {
+    auth = await client.auth.signInWithPassword({ email: normalizedEmail, password });
+  } catch (error) {
+    throw passwordLoginError(error);
+  }
 
-  if (auth.error || !auth.data.session || !auth.data.user) {
+  // Migration is only a fallback for rejected credentials. Never treat an
+  // unconfirmed email, a rate limit, or an Auth outage as a legacy password.
+  if (auth.error?.code === 'invalid_credentials') {
     auth = await migrateLegacyPassword(normalizedEmail, password);
   }
 
-  if (auth.error || !auth.data.session || !auth.data.user) {
-    throw new HttpError(401, 'Invalid email or password', 'INVALID_LOGIN');
+  if (auth.error) throw passwordLoginError(auth.error);
+  if (!auth.data.session || !auth.data.user) {
+    throw passwordLoginError(null);
   }
   if (!auth.data.user.email_confirmed_at) {
     throw new HttpError(403, 'Email confirmation is required', 'EMAIL_CONFIRMATION_REQUIRED');
@@ -162,32 +170,33 @@ export async function updatePassword(req: Request, res: Response) {
 }
 
 async function migrateLegacyPassword(email: string, password: string) {
-  const failed = { data: { session: null, user: null }, error: new Error('Invalid login') } as any;
+  const failed = { data: { session: null, user: null }, error: { code: 'invalid_credentials' } } as any;
   const { data: legacy, error } = await supabaseAdmin
     .from('users')
     .select('id, auth_user_id, name, phone, email, password_hash, address, address_detail')
     .ilike('email', email)
     .maybeSingle();
 
-  if (error || !legacy?.password_hash || !(await bcrypt.compare(password, legacy.password_hash))) {
+  if (error) throw passwordLoginError(null);
+  // Once linked, Supabase is the password source of truth. A leftover V1 hash
+  // must not restore an old password after recovery or an account restriction.
+  if (!legacy?.password_hash || legacy.auth_user_id || !(await bcrypt.compare(password, legacy.password_hash))) {
     return failed;
   }
 
-  let authUserId = legacy.auth_user_id as string | null;
-  if (authUserId) {
-    const updated = await supabaseAdmin.auth.admin.updateUserById(authUserId, {
-      password,
-      email_confirm: true
-    });
-    if (updated.error) return failed;
-  } else {
+  let authUserId: string;
+  {
     const created = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
       user_metadata: { name: legacy.name, phone: legacy.phone }
     });
-    if (created.error || !created.data.user) return failed;
+    if (created.error) {
+      if (created.error.code === 'email_exists' || created.error.code === 'user_already_exists') return failed;
+      throw passwordLoginError(created.error);
+    }
+    if (!created.data.user) throw passwordLoginError(null);
     authUserId = created.data.user.id;
 
     try {
@@ -214,6 +223,28 @@ async function migrateLegacyPassword(email: string, password: string) {
     await supabaseAdmin.from('users').update({ password_hash: null }).eq('id', legacy.id);
   }
   return signedIn;
+}
+
+function passwordLoginError(error: unknown): HttpError {
+  const failure = error && typeof error === 'object'
+    ? error as { code?: unknown; status?: unknown }
+    : {};
+  if (failure.code === 'email_not_confirmed') {
+    return new HttpError(403, 'Email confirmation is required', 'EMAIL_CONFIRMATION_REQUIRED');
+  }
+  if (failure.code === 'over_request_rate_limit' || failure.status === 429) {
+    return new HttpError(429, 'Too many authentication attempts', 'AUTH_RATE_LIMITED');
+  }
+  if (failure.code === 'invalid_credentials') {
+    return new HttpError(401, 'Invalid email or password', 'INVALID_LOGIN');
+  }
+  if (failure.code === 'user_banned') {
+    return new HttpError(403, 'This account is unavailable', 'ACCOUNT_UNAVAILABLE');
+  }
+  if (failure.code === 'email_provider_disabled') {
+    return new HttpError(503, 'Email sign-in is unavailable', 'EMAIL_LOGIN_UNAVAILABLE');
+  }
+  return new HttpError(503, 'Authentication is temporarily unavailable', 'AUTH_SERVICE_UNAVAILABLE');
 }
 
 function mapRegistrationError(message?: string) {

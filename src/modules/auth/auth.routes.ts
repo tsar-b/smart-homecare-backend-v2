@@ -12,6 +12,8 @@ import {
 import { env } from '../../core/env.js';
 import { requireAuth } from '../../middleware/authMiddleware.js';
 import { loginApple } from '../integrations/apple/apple.controller.js';
+import { browserAuthConfig, startOAuth, finishOAuth, startRecovery, finishRecovery,
+  OAuthStartSchema, OAuthExchangeSchema, RecoveryStartSchema, RecoveryFinishSchema } from './browserAuth.js';
 
 export const authRouter = Router();
 
@@ -24,6 +26,11 @@ const authLimiter = rateLimit({
 });
 
 authRouter.post('/register', authLimiter, validate({ body: RegisterSchema }), register);
+authRouter.get('/browser/config', browserAuthConfig);
+authRouter.post('/oauth/start', authLimiter, validate({ body: OAuthStartSchema }), startOAuth);
+authRouter.post('/oauth/exchange', authLimiter, validate({ body: OAuthExchangeSchema }), finishOAuth);
+authRouter.post('/recovery/start', authLimiter, validate({ body: RecoveryStartSchema }), startRecovery);
+authRouter.post('/recovery/finish', authLimiter, validate({ body: RecoveryFinishSchema }), finishRecovery);
 authRouter.post('/guest', authLimiter, registerGuest);
 authRouter.post('/login', authLimiter, validate({ body: LoginSchema }), login);
 authRouter.post('/apple', authLimiter, validate({ body: AppleLoginSchema }), loginApple);

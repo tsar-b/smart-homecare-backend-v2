@@ -1,1 +1,1 @@
-export type IdentityProvider = 'apple' | 'guest' | 'kakao';
+export type IdentityProvider = 'apple' | 'guest' | 'kakao' | 'google';
