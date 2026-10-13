@@ -27,13 +27,15 @@ export function createHttpServer() {
   });
 
   app.get('/ready', async (_req, res) => {
-    const [database, attachmentDatabase, auth, storage] = await Promise.allSettled([
+    const [database, attachmentDatabase, retries, auth, storage] = await Promise.allSettled([
       supabaseAdmin.from('users').select('id', { count: 'exact', head: true }),
       supabaseAdmin.from('booking_attachments').select('id', { count: 'exact', head: true }),
+      supabaseAdmin.rpc('booking_retry_ready'),
       supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 }),
       supabaseAdmin.storage.listBuckets()
     ]);
-    const databaseReady = databaseProbeIsReady(database) && databaseProbeIsReady(attachmentDatabase);
+    const retriesReady = retries.status === 'fulfilled' && !retries.value.error && retries.value.data === true;
+    const databaseReady = databaseProbeIsReady(database) && databaseProbeIsReady(attachmentDatabase) && retriesReady;
     const authReady = auth.status === 'fulfilled' && !auth.value.error;
     const storageReady =
       storage.status === 'fulfilled' &&

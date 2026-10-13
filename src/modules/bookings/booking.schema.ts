@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { BOOKING_TIMEZONE, bookingDateTime } from './booking.time.js';
 
 const IsoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD').refine(
   (value) => {
@@ -49,7 +50,9 @@ const BookingFields = {
   addressDetail: z.string().max(500).optional(),
   reservation_date: IsoDateSchema,
   reservation_time: TimeSchema,
-  timezone: TimezoneSchema.default('Asia/Seoul'),
+  // Accept older clients' valid timezone field, but never let it redefine a
+  // business slot. The supplied date/time remain Asia/Seoul wall-clock values.
+  timezone: TimezoneSchema.default(BOOKING_TIMEZONE).transform(() => BOOKING_TIMEZONE),
   memo: z.string().max(2000).optional(),
   symptom: z.string().max(2000).optional()
 };
@@ -85,16 +88,5 @@ export const BookingParamsSchema = z.object({
 });
 
 export const AvailabilityQuerySchema = z.object({
-  date: IsoDateSchema.optional().default(todayInSeoul)
+  date: IsoDateSchema.optional().default(() => bookingDateTime().date)
 });
-
-function todayInSeoul() {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    day: '2-digit',
-    month: '2-digit',
-    timeZone: 'Asia/Seoul',
-    year: 'numeric'
-  }).formatToParts(new Date());
-  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
-  return `${value('year')}-${value('month')}-${value('day')}`;
-}

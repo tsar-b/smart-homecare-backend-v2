@@ -1,7 +1,9 @@
 # Smart HomeCare Backend v2
 
-For the verified Android integration results and current Mac setup checklist,
-see [live QA and Mac handoff](docs/LIVE_QA_MAC_HANDOFF_2026-09-11.md).
+For the current atomic-booking rollout contract and mobile setup, see
+[frontend handoff](docs/FRONTEND_HANDOFF.md). The
+[September live QA and Mac handoff](docs/LIVE_QA_MAC_HANDOFF_2026-09-11.md)
+records historical Android evidence, not acceptance of the October 13 changes.
 
 SHC v2 is the Supabase/PostgreSQL replacement for the live MongoDB v1 backend.
 MongoDB is not a runtime dependency. The v1 source is preserved in the dedicated
@@ -11,7 +13,7 @@ commits and pre-cutover evidence checklist.
 
 ## Implemented MVP
 
-- Supabase Auth sessions for confirmed email/password, Kakao, and Apple identities
+- Supabase Auth sessions for confirmed email/password and configured Google/Kakao/Apple identities (route support is not provider activation)
 - confirmed-login linkage of migrated standard profiles to Supabase Auth
 - fail-closed guest registration until phone OTP verification is implemented
 - migrated service catalog, pricing, options, assets, and time slots
@@ -19,7 +21,7 @@ commits and pre-cutover evidence checklist.
 - booking history, detail, cancellation, and live availability
 - private customer booking photos/videos with signed uploads, pilot-gated resumable TUS, and expiring downloads
 - PostgreSQL-enforced identity, submission, and active-slot uniqueness
-- durable idempotency claim and completed-response replay
+- atomic booking/receipt commit and durable original-response replay (requires the October 13 migration)
 - explicit admin booking/user APIs and allowlisted catalog CRUD with best-effort operational audit logs
 - v1 frontend route and response aliases during the cutover
 - health, readiness, OpenAPI, migration, verification, and live smoke tooling
@@ -50,6 +52,43 @@ because macOS commonly reserves it for AirPlay Receiver.
 
 Apply migrations in numeric order. Existing SHC data is preserved.
 
+### October 13, 2026 booking-retry upgrade: required before this API
+
+Apply `database/migrations/20261013042516_atomic_booking_retry.sql` **after
+001-008 and before deploying this API revision**. As of this handoff, this new
+migration has not been applied to the shared cloud project. Do not assume a
+previous `/ready` result covers it, or rerun historical migrations just because
+you cloned a repository.
+
+1. Verify the exact target project and its applied migrations; use an approved
+   isolated project for destructive acceptance tests.
+2. Stop/drain the old booking-writing API instances. Do not run old and new
+   booking writers simultaneously; the old response-finish finalizer does not
+   participate in the new transaction protocol.
+3. Dry-run the new migration with the existing migration tool. Its dry-run
+   executes SQL inside a rolled-back transaction; it is not an offline linter.
+4. Apply the reviewed migration once, then deploy/start only the compatible API.
+   Keep bookings unavailable if the rollout or verification fails. Do not
+   casually roll back to the old writable API after new receipts exist.
+5. Check `/ready`, then run the controlled acceptance tests. The new readiness
+   probe returns **503** while the retry RPCs or required database permissions
+   are missing. `/health` may still return 200 because the process is alive.
+
+```bash
+npm run db:migrate -- \
+  --file database/migrations/20261013042516_atomic_booking_retry.sql \
+  --dry-run \
+  --project-ref YOUR_APPROVED_PROJECT_REF \
+  --secrets-file /absolute/path/to/private-secrets.md
+```
+
+Remove `--dry-run` only for a deliberate, approved application after successful
+review and verification. Cloud application and latest native acceptance remain
+separate from local unit, TypeScript and SQL test results.
+
+The example below applies to the earlier media migration only when it is still
+unapplied; it is not the latest booking-retry migration:
+
 ```bash
 npm run db:migrate -- \
   --file database/migrations/007_booking_attachments.sql \
@@ -76,6 +115,37 @@ npm run storage:ensure-booking-media -- --check
 
 ## Booking Contract
 
+### Isolated Windows retry verification
+
+`npm run test:booking-db` exercises the exact booking migrations against the
+dedicated local PostgreSQL QA cluster. `npm run test:booking-http` first runs
+that same SQL suite in a fresh retained database, then exercises production
+Express middleware/controllers and the installed Supabase JS client through a
+strict loopback provider fixture. Both require `SHC_RETRY_QA_ALLOW_LOCAL=yes`.
+
+These opt-in scripts expect this workspace's sibling `work/shc-retry-qa` runner
+on `127.0.0.1:55439`, the synthetic QA owner, and its exact verified data
+directory. They deliberately reject unrelated database targets and never load
+the application's `.env`. They are **not standalone Mac/cloud setup scripts**;
+do not redirect them at a hosted project or production database. Test data and
+JSON evidence are retained, not automatically deleted. Stop the owned local
+runner after testing.
+
+October 13 verification: **33/33 SQL checks** and **16/16 HTTP integration
+checks** passed with Node 24.19.0, PostgreSQL 17.10, Supabase JS 2.113.0, and
+Express 5.2.1. The SQL prerequisite in the HTTP run is repeated coverage, not
+33 extra distinct tests. RPC transactions and database role permissions are
+real; Auth identities, storage responses, and attachment readiness responses
+are synthetic. This does not certify hosted PostgREST/Auth/Storage, media
+transfers, or native Android/iOS behavior.
+
+### Request identity and pricing
+
+Both canonical `/api/bookings` and legacy `/api/booking` creation require a
+member account. Guest-authenticated profiles cannot bypass this restriction
+through the legacy alias. Existing authenticated history/detail access is
+unchanged.
+
 `POST /api/bookings` requires:
 
 - a Supabase access token in `Authorization: Bearer ...`
@@ -89,6 +159,59 @@ catalog rows. Temporary V1 client-price compatibility exists only on deprecated
 catalog relationships, while PostgreSQL remains the final authority for
 duplicate identities, duplicate submissions, catalog-reference existence, and
 active-slot collisions under concurrency.
+
+Scheduling uses the server-owned business timezone `Asia/Seoul` for both
+availability and booking creation. `reservation_date` and `reservation_time`
+are business-local wall-clock values; they are not converted from the device's
+timezone. The optional `timezone` request field remains accepted for older
+clients when it is a valid IANA timezone, but is normalized to `Asia/Seoul` for
+new bookings. Unknown/invalid timezone values are still rejected. Switching
+the UI language does not change the scheduling timezone. Existing booking
+records are not rewritten by this policy correction.
+
+### Atomic retry receipts
+
+The new API commits the booking and its `booking_submission_receipts` row in
+one PostgreSQL transaction. A lost response is retried with the **same user,
+endpoint, Idempotency-Key, client_request_id and request body**. Do not change a
+request's contents or mint a new UUID because a timeout leaves the commit
+outcome unknown. A replay returns HTTP **201**, the original response snapshot,
+and `Idempotency-Replayed: true`, even if that appointment is now in the past.
+It is not a fresh booking and not a statement about its current status: refresh
+booking detail/history after replay, particularly after cancellation or admin
+changes. A receipt does not recreate an individually deleted booking.
+
+- HTTP 409 `IDEMPOTENCY_CONFLICT`: a key/request ID was reused with a different
+  request, scope or retry identity. Reconcile the original request first.
+- HTTP 409 `BOOKING_RETRY_REVIEW_REQUIRED`: ambiguous pre-upgrade history may
+  already contain the booking. Inspect booking history/support records before
+  deliberately submitting anything new; do not automatically rotate IDs.
+- HTTP 409 `BOOKING_SLOT_UNAVAILABLE` / `BOOKING_SLOT_IN_PAST`: the new booking
+  cannot claim that slot. A committed identical replay is handled before these
+  current-slot checks.
+- HTTP 503 `IDEMPOTENCY_STORE_UNAVAILABLE`: the migration/store may be unavailable
+  or a commit response uncertain. Preserve the draft and retry the same identity
+  and body after the dependency recovers; there is no direct-insert fallback.
+
+Receipts have **no automatic TTL or cleanup**. They retain a private copy of the
+original booking response, including customer contact/address information; they
+must not be exposed to ordinary client database roles, logs or public exports.
+Their lifetime is independent of an individual booking's removal. Operators
+must review retention and coordinated account erasure explicitly: deleting a
+receipt can remove the protection against an old request becoming new again.
+Do not add receipts to a generic TTL/reconciliation job.
+
+### Apple/Kakao development hooks
+
+The mobile development build can exercise Apple/Kakao through the existing
+`/api/auth/oauth/start` and `/api/auth/oauth/exchange` browser-PKCE routes. These
+are setup probes, not fake sessions. Both endpoints still enforce the backend
+`SUPABASE_OAUTH_PROVIDERS` allowlist; provider credentials and enablement must
+also be configured in Supabase before a real sign-in can succeed. A disabled
+provider returns `OAUTH_PROVIDER_DISABLED`; an unregistered return URI returns
+`AUTH_REDIRECT_INVALID`. Ordinary release sign-in lists only configured providers.
+See the [frontend handoff](docs/FRONTEND_HANDOFF.md#browser-oauth-and-development-route-checks)
+for callback and Mac rebuild requirements.
 
 ## Private Booking Media
 

@@ -2,6 +2,8 @@ import type { Request, Response } from 'express';
 import { HttpError } from '../../core/errors.js';
 import { supabaseAdmin } from '../../db/supabaseAdmin.js';
 import { assertBookableSlot, buildBookingQuote, isSlotInPast, normalizeSlots } from './booking.service.js';
+import { BOOKING_TIMEZONE } from './booking.time.js';
+import { commitBooking, readBookingReplay } from './booking.retry.js';
 
 const ACTIVE_STATUSES = ['대기', '확정', 'pending', 'confirmed', 'approved'];
 
@@ -14,6 +16,12 @@ export async function createLegacyBooking(req: Request, res: Response) {
 }
 
 async function createBookingWithMode(req: Request, res: Response, allowLegacyClientPrice: boolean) {
+  const replay = await readBookingReplay(req);
+  if (replay) {
+    res.setHeader('Idempotency-Replayed', 'true');
+    res.status(201).json(toBookingResponse(replay));
+    return;
+  }
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('users')
     .select('name, phone, address, address_detail, is_guest')
@@ -23,7 +31,7 @@ async function createBookingWithMode(req: Request, res: Response, allowLegacyCli
 
   const [quote] = await Promise.all([
     buildBookingQuote(bookingQuoteInput(req.body, allowLegacyClientPrice)),
-    assertBookableSlot(req.body.reservation_date, req.body.reservation_time, req.body.timezone)
+    assertBookableSlot(req.body.reservation_date, req.body.reservation_time)
   ]);
 
   const payload = {
@@ -42,7 +50,7 @@ async function createBookingWithMode(req: Request, res: Response, allowLegacyCli
     detail_address: req.body.detail_address ?? req.body.addressDetail ?? profile.address_detail ?? null,
     reservation_date: req.body.reservation_date,
     reservation_time: req.body.reservation_time,
-    timezone: req.body.timezone,
+    timezone: BOOKING_TIMEZONE,
     memo: req.body.memo ?? null,
     symptom: req.body.symptom ?? null,
     total_price: quote.totalPrice,
@@ -53,17 +61,7 @@ async function createBookingWithMode(req: Request, res: Response, allowLegacyCli
     status: '대기'
   };
 
-  const { data, error } = await supabaseAdmin.from('bookings').insert(payload).select('*').single();
-  if (error?.code === '23505') {
-    const detail = `${error.message} ${error.details ?? ''}`;
-    const duplicateSubmission = detail.includes('client_request_id');
-    throw new HttpError(
-      409,
-      duplicateSubmission ? 'This booking was already submitted' : 'Time slot is already booked',
-      duplicateSubmission ? 'DUPLICATE_BOOKING' : 'BOOKING_SLOT_UNAVAILABLE'
-    );
-  }
-  if (error) throw new HttpError(400, error.message, 'BOOKING_CREATE_FAILED');
+  const data = await commitBooking(req, res, payload);
   res.status(201).json(toBookingResponse(data));
 }
 
@@ -139,7 +137,7 @@ export async function getAvailableTimeSlots(req: Request, res: Response) {
   res.json(
     slots.map((time) => ({
       time,
-      available: !taken.has(time) && !isSlotInPast(date, time, 'Asia/Seoul')
+      available: !taken.has(time) && !isSlotInPast(date, time)
     }))
   );
 }

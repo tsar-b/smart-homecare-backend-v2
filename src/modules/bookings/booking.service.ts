@@ -1,5 +1,6 @@
 import { HttpError } from '../../core/errors.js';
 import { supabaseAdmin } from '../../db/supabaseAdmin.js';
+import { bookingDateTime } from './booking.time.js';
 
 type OptionInput = {
   option_id?: string;
@@ -107,8 +108,8 @@ export async function buildBookingQuote(input: QuoteInput): Promise<BookingQuote
   };
 }
 
-export async function assertBookableSlot(date: string, time: string, timezone: string) {
-  if (isSlotInPast(date, time, timezone)) {
+export async function assertBookableSlot(date: string, time: string) {
+  if (isSlotInPast(date, time)) {
     throw new HttpError(409, 'Reservation time is in the past', 'BOOKING_SLOT_IN_PAST');
   }
 
@@ -122,8 +123,8 @@ export async function assertBookableSlot(date: string, time: string, timezone: s
   }
 }
 
-export function isSlotInPast(date: string, time: string, timezone: string, now = new Date()) {
-  const current = zonedDateTime(now, timezone);
+export function isSlotInPast(date: string, time: string, now = new Date()) {
+  const current = bookingDateTime(now);
   return date < current.date || (date === current.date && time <= current.time);
 }
 
@@ -219,22 +220,4 @@ function objectArray(value: unknown) {
   return Array.isArray(value)
     ? value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
     : [];
-}
-
-function zonedDateTime(now: Date, timezone: string) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    day: '2-digit',
-    hour: '2-digit',
-    hour12: false,
-    minute: '2-digit',
-    month: '2-digit',
-    timeZone: timezone,
-    year: 'numeric'
-  }).formatToParts(now);
-  const value = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '';
-  const hour = value('hour') === '24' ? '00' : value('hour');
-  return {
-    date: `${value('year')}-${value('month')}-${value('day')}`,
-    time: `${hour}:${value('minute')}`
-  };
 }

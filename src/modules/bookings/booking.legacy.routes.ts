@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../../middleware/authMiddleware.js';
+import { requireBookingMember } from '../../middleware/memberBooking.js';
 import { validate } from '../../middleware/validate.js';
 import {
   createLegacyBooking,
@@ -16,6 +17,7 @@ legacyBookingRouter.get('/timeslots', validate({ query: AvailabilityQuerySchema 
 legacyBookingRouter.post(
   '/booking',
   requireAuth,
+  requireBookingMember,
   requireIdempotencyKey,
   validate({ body: LegacyCreateBookingSchema }),
   createLegacyBooking

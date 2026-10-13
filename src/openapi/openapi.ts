@@ -1,4 +1,5 @@
 import { env } from '../core/env.js';
+import { BOOKING_TIMEZONE } from '../modules/bookings/booking.time.js';
 
 const jsonBody = (schema: Record<string, unknown>) => ({
   required: true,
@@ -12,6 +13,16 @@ const jsonResponse = (description: string, schema?: Record<string, unknown>) => 
 
 const errorResponse = { $ref: '#/components/responses/Error' };
 const authenticatedErrors = { '401': errorResponse, '403': errorResponse };
+const bookingCreateResponses = {
+  '201': {
+    ...jsonResponse('Booking created, or original submission snapshot replayed. A replay is not current booking status; refresh detail/history.', { $ref: '#/components/schemas/Booking' }),
+    headers: { 'Idempotency-Replayed': { description: 'Present with value true when replaying an already committed submission.', schema: { type: 'string', enum: ['true'] } } }
+  },
+  '400': errorResponse,
+  '409': jsonResponse('IDEMPOTENCY_CONFLICT: changed retry identity/body/scope; BOOKING_RETRY_REVIEW_REQUIRED: ambiguous historical submission, inspect history before resubmitting; BOOKING_SLOT_UNAVAILABLE or BOOKING_SLOT_IN_PAST: new booking cannot claim this slot. Never automatically rotate IDs to resolve an uncertain previous booking.', { $ref: '#/components/schemas/Error' }),
+  '503': jsonResponse('IDEMPOTENCY_STORE_UNAVAILABLE: retry RPC/migration/permissions unavailable, or commit response uncertain. Preserve draft, Idempotency-Key, client_request_id, endpoint and identical body; retry the same request after recovery. No direct-insert fallback.', { $ref: '#/components/schemas/Error' }),
+  ...authenticatedErrors
+};
 const browserStartProperties = {
   redirectUri: { type: 'string', maxLength: 500, description: 'Exact server-allowlisted callback URI without query or fragment.' },
   state: { type: 'string', pattern: '^[a-f0-9]{64}$' },
@@ -57,7 +68,7 @@ export const openApiDocument = {
         in: 'header',
         required: true,
         schema: { type: 'string', minLength: 8, maxLength: 200 },
-        description: 'Stable key reused only when retrying the identical booking request.'
+        description: 'Stable key reused with the same client_request_id, endpoint and exact body for an identical booking retry, including after an uncertain 503/network response. Committed receipts have no automatic TTL. Reusing an identity with changed content conflicts; do not mint a new key to hide an unknown outcome.'
       }
     },
     responses: {
@@ -184,7 +195,10 @@ export const openApiDocument = {
           addressDetail: { type: 'string' },
           reservation_date: { type: 'string', format: 'date' },
           reservation_time: { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' },
-          timezone: { type: 'string', default: 'Asia/Seoul' },
+          timezone: {
+            type: 'string', default: BOOKING_TIMEZONE,
+            description: 'Compatibility input: valid IANA values are accepted, but new bookings always use Asia/Seoul business-local date/time without conversion.'
+          },
           memo: { type: 'string', maxLength: 2000 },
           symptom: { type: 'string', maxLength: 2000 }
         },
@@ -207,7 +221,10 @@ export const openApiDocument = {
           options: { type: 'array', maxItems: 30, items: { $ref: '#/components/schemas/SelectedOption' } },
           reservation_date: { type: 'string', format: 'date' },
           reservation_time: { type: 'string', pattern: '^([01]\\d|2[0-3]):[0-5]\\d$' },
-          timezone: { type: 'string', default: 'Asia/Seoul' }
+          timezone: {
+            type: 'string', default: BOOKING_TIMEZONE,
+            description: 'Compatibility input: valid IANA values are accepted, but new bookings always use Asia/Seoul business-local date/time without conversion.'
+          }
         },
         allOf: [
           { anyOf: [{ required: ['subtype_id'] }, { required: ['asset_id'] }, { required: ['subtype'] }] },
@@ -335,11 +352,11 @@ export const openApiDocument = {
       get: {
         tags: ['System'],
         operationId: 'readiness',
-        description: 'Checks Supabase Auth/database reachability and private media bucket configuration. It does not prove the Storage RLS policy; run db:verify-border and the live policy smoke at deployment.',
+        description: 'Checks Supabase Auth/database reachability, private media buckets and atomic booking retry RPC/permissions. Requires migration 20261013042516_atomic_booking_retry.sql after 001-008 before deploying this API; no mixed old/new booking writers. It does not prove Storage RLS or native/provider flows; run the separate deployment acceptance checks.',
         security: [],
         responses: {
-          '200': jsonResponse('Supabase Auth and database are reachable'),
-          '503': jsonResponse('A Supabase dependency is unavailable')
+          '200': jsonResponse('Required Supabase and booking retry readiness checks passed; not a claim of completed native/cloud acceptance'),
+          '503': jsonResponse('A Supabase dependency or required atomic booking retry migration/RPC/permission is unavailable; health may still be 200')
         }
       }
     },
@@ -359,6 +376,7 @@ export const openApiDocument = {
     },
     '/api/auth/oauth/start': {
       post: { tags: ['Authentication'], operationId: 'startBrowserOAuth', security: [],
+        description: 'Shared browser-PKCE start for Google, Apple and Kakao. Mobile development route-check buttons use this exact endpoint, not a fake login. Backend provider enablement is always required (OAUTH_PROVIDER_DISABLED / 503), plus exact callback allowlisting (AUTH_REDIRECT_INVALID / 400). Supabase provider credentials/configuration must also be completed before real sign-in can work.',
         requestBody: jsonBody({ type: 'object', additionalProperties: false,
           required: ['provider', 'redirectUri', 'state', 'codeChallenge'], properties: { ...browserStartProperties, provider: providerProperty } }),
         responses: { '200': jsonResponse('Supabase authorization URL; no-store', { type: 'object', properties: { authorizationUrl: { type: 'string', format: 'uri' } } }), ...browserErrors } }
@@ -506,10 +524,11 @@ export const openApiDocument = {
       post: {
         tags: ['Bookings'],
         operationId: 'createBooking',
+        description: 'Atomically commits the booking and durable private receipt. Retry an uncertain response with the same identity/body/endpoint. An original 201 snapshot can replay even after cancellation or date passage; fetch detail/history for current status. Requires the atomic-booking migration before this API accepts writes.',
         security: [{ bearerAuth: [] }],
         parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
         requestBody: jsonBody({ $ref: '#/components/schemas/BookingCreate' }),
-        responses: { '201': jsonResponse('Booking created or replayed', { $ref: '#/components/schemas/Booking' }), '400': errorResponse, '409': errorResponse, ...authenticatedErrors }
+        responses: bookingCreateResponses
       }
     },
     '/api/booking': {
@@ -517,11 +536,11 @@ export const openApiDocument = {
         tags: ['Bookings'],
         operationId: 'createLegacyBooking',
         deprecated: true,
-        description: 'Temporary V1 compatibility route. It is the only route that accepts legacy client total_price.',
+        description: 'Temporary V1 compatibility route. It is the only route that accepts legacy client total_price. Uses the same atomic retry receipts; retry against this same route rather than changing to the canonical endpoint. Requires the atomic-booking migration and no mixed old/new writers.',
         security: [{ bearerAuth: [] }],
         parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
         requestBody: jsonBody({ $ref: '#/components/schemas/LegacyBookingCreate' }),
-        responses: { '201': jsonResponse('Legacy booking created or replayed', { $ref: '#/components/schemas/Booking' }), '400': errorResponse, '409': errorResponse, ...authenticatedErrors }
+        responses: bookingCreateResponses
       }
     },
     '/api/bookings/history': {

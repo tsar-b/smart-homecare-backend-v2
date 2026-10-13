@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { User } from '@supabase/supabase-js';
 import { env } from '../../core/env.js';
 import { callbackUrl, enabledProviders, OAuthStartSchema, RecoveryFinishSchema,
-  verifiedSocialIdentity, startRecovery, finishRecovery } from './browserAuth.js';
+  verifiedSocialIdentity, startRecovery, finishRecovery, startOAuth, finishOAuth } from './browserAuth.js';
 
 const redirectUri = 'smarthomecareapplication://auth/callback';
 const state = 'a'.repeat(64);
@@ -29,6 +29,61 @@ test('callbacks require an exact allowlisted return address and valid state', ()
     assert.throws(() => callbackUrl(uri, state, redirectUri));
   }
   assert.throws(() => callbackUrl(redirectUri, 'invalid', redirectUri));
+});
+
+test('Apple and Kakao route hooks use the same PKCE authorize URL and allowlisted native callback as Google', async () => {
+  const originalProviders = env.SUPABASE_OAUTH_PROVIDERS;
+  const originalAllowlist = env.AUTH_REDIRECT_URLS;
+  env.SUPABASE_OAUTH_PROVIDERS = 'google,apple,kakao';
+  env.AUTH_REDIRECT_URLS = redirectUri;
+  try {
+    for (const provider of ['google', 'apple', 'kakao']) {
+      const res = responseRecorder();
+      await startOAuth({ body: { provider, redirectUri, state, codeChallenge } } as never, res as never);
+      const target = new URL((res.body as { authorizationUrl: string }).authorizationUrl);
+      assert.equal(target.origin, new URL(env.SUPABASE_URL).origin);
+      assert.equal(target.pathname, '/auth/v1/authorize');
+      assert.equal(target.searchParams.get('provider'), provider);
+      assert.equal(target.searchParams.get('code_challenge'), codeChallenge);
+      assert.equal(target.searchParams.get('code_challenge_method'), 's256');
+      assert.equal(target.searchParams.get('redirect_to'), `${redirectUri}?state=${state}`);
+      assert.equal(target.searchParams.has('code_verifier'), false);
+      assert.equal(target.searchParams.has('access_token'), false);
+      assert.equal(res.headers['Cache-Control'], 'no-store');
+    }
+  } finally { env.SUPABASE_OAUTH_PROVIDERS = originalProviders; env.AUTH_REDIRECT_URLS = originalAllowlist; }
+});
+
+test('development route hooks cannot bypass backend provider enablement or exchange disabled providers', async () => {
+  const originalProviders = env.SUPABASE_OAUTH_PROVIDERS;
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  env.SUPABASE_OAUTH_PROVIDERS = 'google';
+  globalThis.fetch = async () => { calls++; throw new Error('No upstream request is allowed'); };
+  try {
+    for (const provider of ['apple', 'kakao']) {
+      for (const [handler, body] of [
+        [startOAuth, { provider, redirectUri, state, codeChallenge }],
+        [finishOAuth, { provider, code: 'untrusted-code', codeVerifier: 'v'.repeat(64) }],
+      ] as const) {
+        await assert.rejects(() => handler({ body } as never, responseRecorder() as never),
+          (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'OAUTH_PROVIDER_DISABLED'));
+      }
+    }
+    assert.equal(calls, 0);
+  } finally { env.SUPABASE_OAUTH_PROVIDERS = originalProviders; globalThis.fetch = originalFetch; }
+});
+
+test('enabled Apple and Kakao routes reject unregistered return addresses', async () => {
+  const originalProviders = env.SUPABASE_OAUTH_PROVIDERS;
+  const originalAllowlist = env.AUTH_REDIRECT_URLS;
+  env.SUPABASE_OAUTH_PROVIDERS = 'apple,kakao'; env.AUTH_REDIRECT_URLS = redirectUri;
+  try {
+    for (const provider of ['apple', 'kakao']) {
+      await assert.rejects(() => startOAuth({ body: { provider, redirectUri: 'https://evil.invalid/auth/callback', state, codeChallenge } } as never, responseRecorder() as never),
+        (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'AUTH_REDIRECT_INVALID'));
+    }
+  } finally { env.SUPABASE_OAUTH_PROVIDERS = originalProviders; env.AUTH_REDIRECT_URLS = originalAllowlist; }
 });
 
 test('provider subjects come from Auth identities, not user metadata', () => {

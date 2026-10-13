@@ -1,5 +1,14 @@
 # SHC v2 Deployment
 
+> October 13 booking retry update: follow the
+> [migration-first rollout procedure](../README.md#october-13-2026-booking-retry-upgrade-required-before-this-api)
+> before starting this API revision. The new
+> `20261013042516_atomic_booking_retry.sql` migration is not yet applied to the
+> shared cloud project. Drain old booking writers; do not run old/new writers
+> together. The Mac handoff branch `agent/shc-mac-handoff-20261013` is for testing,
+> not approval to deploy or apply cloud migrations. `/ready` now also checks
+> the retry RPC and required receipt permissions.
+
 ## Required Environment
 
 Set these in the hosting provider's encrypted environment settings:

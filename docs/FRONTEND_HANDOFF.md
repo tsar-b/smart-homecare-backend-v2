@@ -1,5 +1,21 @@
 # SHC v2 Frontend Handoff
 
+## October 13, 2026 upgrade boundary
+
+This revision requires `database/migrations/20261013042516_atomic_booking_retry.sql`
+after migrations 001-008 and **before the new API accepts bookings**. It has not
+been applied to the shared cloud project as part of this handoff. An operator
+must stop/drain old booking writers, apply the reviewed migration once, then
+start compatible writers only. Do not mix the old finalizer-based API and the
+new transactional API, or automatically roll back to an old writable instance.
+See the [backend README rollout instructions](../README.md#october-13-2026-booking-retry-upgrade-required-before-this-api).
+
+`GET /ready` returns 503 until the new retry RPCs and required permissions are
+present; `GET /health` alone is insufficient. Cloning to Mac does not authorize
+or require rerunning already-applied migrations. Latest-source Android/iOS and
+cloud verification must be recorded separately from historical handoffs and
+mocked/local SQL tests.
+
 ## Base URL
 
 Set the frontend API base to `https://YOUR_BACKEND/api`. For same-Wi-Fi device
@@ -19,6 +35,52 @@ routes below.
 - `POST /auth/refresh`
 - `POST /auth/logout`
 - `GET|PATCH|DELETE /users/me`
+
+### Browser OAuth and development route checks
+
+New mobile social sign-in uses these shared browser-PKCE routes for
+`google`, `apple` and `kakao`:
+
+- `GET /auth/browser/config`: enabled provider list and recovery availability.
+- `POST /auth/oauth/start`: validated provider, exact return URI, random state
+  and S256 challenge; returns the Supabase authorization URL.
+- `POST /auth/oauth/exchange`: verified callback code, locally saved verifier
+  and original provider; returns the normal SHC session only after verification.
+- `POST /auth/recovery/start` and `POST /auth/recovery/finish`: separate password
+  recovery flow, not a social login or implicit token callback.
+
+The direct-token `/auth/apple` and `/kakao/login` interfaces listed above remain
+compatibility paths; the new setup hooks do not use them or a native Apple SDK.
+
+Development builds (`__DEV__`) show **Check Apple route** and **Check Kakao
+route** on Login, even when those providers are disabled. The controls send a
+real start request through the shared path. They cannot bypass server
+`SUPABASE_OAUTH_PROVIDERS`: disabled providers return HTTP 503
+`OAUTH_PROVIDER_DISABLED` with safe setup guidance, no browser launch and no
+session. Missing callback registration returns `AUTH_REDIRECT_INVALID`.
+Failed starts clear the matching pending verifier; cancellation and repeated
+callbacks retain the existing safe callback handling. The setup controls are
+hidden in release builds; configured providers still use normal sign-in buttons.
+
+Real sign-in requires both provider setup in Supabase and the backend allowlist.
+Do not enable a provider just to make the button appear. Refresh the configuration
+after operator changes. Keep credentials server-side; do not copy the private
+credential notebook into Expo or commit it.
+
+There are two distinct callbacks:
+
+1. Apple/Kakao developer console redirects to the Supabase project's
+   `https://<project-ref>.supabase.co/auth/v1/callback`.
+2. Supabase returns to `smarthomecareapplication://auth/callback`; register that
+   exact URI in Supabase's redirect allowlist and backend `AUTH_REDIRECT_URLS`.
+   Web testing instead needs its exact `/auth/callback` origin registered.
+
+The Mac needs a fresh iOS development build with `expo-web-browser` and the
+native URL scheme installed (`npm ci`, then `npm run ios` with Xcode/tooling).
+Reloading an older binary is not sufficient. This Apple route is browser OAuth,
+not an implementation or verification of native Authentication Services.
+Successful provider consent, iOS callbacks and release signing remain separate
+acceptance checks. No Apple renewal or provider activation was performed here.
 
 Login-like responses include both `token` and `accessToken`; they are the same
 Supabase access token. Persist `accessToken` and `refreshToken` in secure device
@@ -75,13 +137,47 @@ estimate, then use `totalPrice` from the booking response. Retry the same body
 with the same UUID after a network failure. Generate a new UUID only when the
 user intentionally creates a new booking.
 
+The reservation date and time are always `Asia/Seoul` business-local values,
+independent of device timezone or UI language. Do not convert them from the
+device clock. Both availability and booking creation use the same server-owned
+timezone. Older clients may still send a valid IANA `timezone`, but the backend
+normalizes that field to `Asia/Seoul` on new bookings; invalid values are rejected.
+This correction does not rewrite any existing booking records.
+
 All three catalog IDs in the example are mandatory on `POST /api/bookings`.
 Sending `total_price` to that canonical endpoint is a validation error. Only the
 deprecated singular `POST /api/booking` route retains temporary V1
 client-price compatibility; do not use it in new frontend code.
 
-`BOOKING_SLOT_UNAVAILABLE` means another request won the slot.
-`IDEMPOTENCY_CONFLICT` means one key was reused with a different body.
+### Retry outcomes and client behavior
+
+The server stores booking and receipt atomically. Reuse the exact body, key,
+request UUID and endpoint after a timeout/uncertain response; do not recalculate
+prices, replace profile fields in the retry payload, or silently generate a new
+request ID. Identical committed retries return **201** with
+`Idempotency-Replayed: true`. The returned booking is the original submission
+snapshot, not its latest status. Refresh detail/history afterwards; cancellation,
+completion or admin deletion must not be inferred away by an old replay.
+
+| HTTP/code | Required client behavior |
+|---|---|
+| 409 `BOOKING_SLOT_UNAVAILABLE` | Another booking won the slot. Offer refreshed availability for a deliberate new selection. |
+| 409 `BOOKING_SLOT_IN_PAST` | This new submission is too late. Offer a future slot; previously committed matching requests still replay. |
+| 409 `IDEMPOTENCY_CONFLICT` | Key, request UUID, endpoint or body conflicts with an earlier submission. Reconcile the original instead of retrying changed content under its identity. |
+| 409 `BOOKING_RETRY_REVIEW_REQUIRED` | A historical booking may already exist but cannot be safely matched. Ask the user to inspect history/support before any new submission. Do not auto-rotate IDs. |
+| 503 `IDEMPOTENCY_STORE_UNAVAILABLE` | Preserve the draft and identity. Retry the same request when the migration/store/network issue is resolved; the previous commit outcome may be unknown. |
+
+No generic `IDEMPOTENCY_IN_PROGRESS` claim/finalize loop is required for new
+bookings; the transaction serializes conflicting retries. Receipt retention is
+durable with **no automatic TTL**. The private receipt includes the original
+customer response; backend operators must handle retention/erasure deliberately.
+It must not be shipped to the client except through owner-authorized replay,
+included in public exports or purged by a generic expired-key job.
+
+The current mobile screen retains the same retry identity while that submission
+remains mounted. This is not a claim that an unsent draft survives a process
+kill: after an app restart, inspect history before making a new submission if
+the old outcome is unknown.
 
 ## Private Photos And Videos
 
@@ -215,7 +311,10 @@ The current mobile app can continue using `/login`, `/register`, `/booking`,
 Response objects include both Mongo-style `_id`/camelCase aliases and canonical
 Supabase fields during the migration window.
 
-## Provider Configuration
+## Legacy direct-token provider configuration
+
+This section describes the retained direct-token compatibility endpoints, not
+the new mobile browser-PKCE hooks described above.
 
 Apple identity tokens are verified against Apple's JWKS and the backend
 `APPLE_CLIENT_IDS` allowlist. Kakao access tokens are validated with Kakao before

@@ -65,6 +65,7 @@ test('installed Supabase SDK bodyless HEAD 404 cannot make a missing table ready
 
 for (const missingTable of ['users', 'booking_attachments']) {
   test(`/ready returns 503 when ${missingTable} HEAD is 404 with error null`, async (t) => {
+    t.mock.method(supabaseAdmin, 'rpc', async () => ({ data: true, error: null }) as never);
     const probedTables: string[] = [];
     t.mock.method(supabaseAdmin, 'from', (table: string) => ({
       select: (columns: string, options: { count: string; head: boolean }) => {
@@ -94,6 +95,7 @@ for (const missingTable of ['users', 'booking_attachments']) {
 }
 
 test('/ready still returns 200 for existing empty tables with healthy Auth and private buckets', async (t) => {
+  t.mock.method(supabaseAdmin, 'rpc', async () => ({ data: true, error: null }) as never);
   t.mock.method(supabaseAdmin, 'from', () => ({
     select: () => Promise.resolve(healthyProbe)
   }) as never);
@@ -110,6 +112,22 @@ test('/ready still returns 200 for existing empty tables with healthy Auth and p
     ok: true,
     dependencies: { supabaseAuth: true, supabaseDatabase: true, supabaseStorage: true }
   });
+});
+
+test('/ready fails closed until the atomic booking migration is available', async t => {
+  t.mock.method(supabaseAdmin, 'from', () => ({ select: () => Promise.resolve(healthyProbe) }) as never);
+  t.mock.method(supabaseAdmin.auth.admin, 'listUsers', async () => ({ data: { users: [] }, error: null }) as never);
+  t.mock.method(supabaseAdmin.storage, 'listBuckets', async () => ({ data: readyBuckets, error: null }) as never);
+  for (const probe of [{ data: null, error: { code: 'PGRST202' } }, { data: false, error: null }, { data: null, error: null }]) {
+    const rpc = t.mock.method(supabaseAdmin, 'rpc', async (name: string) => {
+      assert.equal(name, 'booking_retry_ready');
+      return probe as never;
+    });
+    const result = await callReadinessHandler();
+    assert.equal(result.status, 503);
+    assert.equal((result.body as any).dependencies.supabaseDatabase, false);
+    rpc.mock.restore();
+  }
 });
 
 async function callReadinessHandler() {
